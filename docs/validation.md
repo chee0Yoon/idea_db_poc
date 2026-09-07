@@ -1,72 +1,135 @@
-# MVP 검증 결과
+# 검증 현황
 
-검증일: 2026-09-07. Main이 작업자 결과를 검토하고 아래 명령을 직접 실행했다.
+검증일: 2026-09-07. 이 문서는 현재 MCP 구조에서 직접 확인한 결과와 과거
+HTTP 쓰기 구조에서 얻은 결과를 구분한다. 아직 재실행하지 않은 항목은 통과로
+간주하지 않는다.
 
-## 실행 환경
+## 현재 구조와 검증 환경
 
-- macOS ARM64, Docker Desktop Engine 28.5.1.
-- Rust 1.98.0, Neo4j 5.26.30 Community. 기반 이미지는 Dockerfile에서 digest로 고정했다.
-- 검증 이미지: `idea-db:acceptance`, Linux ARM64, 약 362 MB.
-- 이미지 ID: `sha256:3106e2d5d5b8a081b45674dafa489d21fe994fd06175370abc6dee3b63f8a36b`.
-- Neo4j와 Rust API를 하나의 컨테이너에서 실행했다. 호스트 Python은 클라이언트·검증 도구로만 사용했다.
+- 로컬 AI 클라이언트가 원문을 원자화하고 Project → Schema → 재귀 Core →
+  Idea 패키지와 출처 coverage ledger를 만든다. 서버는 의미 분해를 대신하지
+  않고 구조·그래프·출처·CAS를 검증한다.
+- 모든 생성·변경·복원은 stdio MCP를 거친다. HTTP API와 대시보드는 읽기
+  전용이며 브라우저에서 쓰기 요청을 보내지 않는다.
+- MCP preview는 로컬 Ollama embedding을 생성하고 준비 패킷을 Neo4j에
+  저장한다. apply는 검토한 `upload_id`와 `prepared_digest`만 받아 모델 호출
+  없이 원자적으로 커밋한다.
+- 실행 환경은 macOS ARM64, Rust 1.98.0, Neo4j 5.26.30 Community와 Docker
+  Desktop Engine 28.5.1이다. Rust API와 Neo4j는 digest로 고정한 standalone
+  이미지 하나에서 실행했고, 호스트 Python/Node는 검증 클라이언트로만 썼다.
 
-## 실제 실행 결과
+## 현재 확인된 결과
 
-| 검증 | 결과 |
-|---|---|
-| `make check` | fmt, Clippy `-D warnings`, Rust 테스트 88개 모두 통과 |
-| `bash scripts/docker-check.sh` | 이미지 재빌드부터 전체 수용·복구·종료까지 통과 |
-| 실제 Neo4j 수용 시나리오 | 12/12 통과, 단언을 제외하거나 완화하지 않음 |
-| 강제 종료 후 재시작 | 전체 export content와 digest 동일 |
-| 빈 볼륨에 export/import | 기록·응용 ID·head·영수증·seq·digest 동일 |
-| API 프로세스 상실 | 컨테이너가 실패 종료하며 DB만 남아 정상처럼 보이지 않음 |
-| 정상 종료 | 40초 제한 안에 exit 0 |
-| 셸/클라이언트 | 셸 구문, Python 구문, 로컬 초안 생성·덮어쓰기 거절 확인 |
-| 2D GUI | 실제 브라우저에서 Project → Schema → Core → Idea 생성, 원문 저장, 경로·역할·내용·변경 이력 표시 확인 |
+| 검증 | 결과 | 근거 |
+|---|---|---|
+| 최종 `make check` | 통과: fmt, Clippy `-D warnings`, library 115개, MCP binary 2개 (총 117개) | [정적 검사 로그](../test-results/logs/host-runs-20260907/idea-db-mcp-check-r7.log) |
+| MCP intake | 12개 항목 통과, 실제 Ollama `embeddinggemma:300m` 사용 | [mcp-ingest-report.json](../test-results/mcp-acceptance-r6-20260907/mcp-ingest/mcp-ingest-report.json) |
+| 읽기 전용 UI | 7개 항목 통과, 쓰기 요청 0건, 브라우저 예외 0건 | [UI 보고서](../test-results/ui-mcp-r4-20260907/report.json), [검색 화면](../test-results/ui-mcp-r4-20260907/capture-search.png), [Idea 상세](../test-results/ui-mcp-r4-20260907/idea-detail.png) |
+| MCP 30단계 수명주기 r6 | 30/30, 강제 재시작·빈 볼륨 복원·API 프로세스 상실·정상 종료 검증 통과 | [단계 보고서](../test-results/mcp-lifecycle-r6-20260907/report.md), [배포 검사](../test-results/mcp-lifecycle-r6-20260907/deployment-checks.json) |
+| MCP 수용 r6 | 13/13 + intake 12/12, 재시작·복원·프로세스 상실·정상 종료 모두 통과 | [전체 로그](../test-results/logs/host-runs-20260907/idea-db-mcp-acceptance-r6.log) |
 
-수용 시나리오는 로그인 정책의 6단계 다이아몬드 재사용, 모델링 가설과 관측·기준선 변경, 비개발 정성 기획의 세 Project를 생성한다. 동일 head 동시 편집에서 한 요청만 성공하고, 실패 요청의 기록이 남지 않는지 확인한다. 이전 지식 시점 조회, 공식 publication의 유효 시각, 엄격한 역할 검색과 파생 문맥 분리, 원문·후보 승격, 잘못된 참조·순환·출처·멱등 요청 충돌도 검증한다.
+최종 정적 검사 로그는 library 테스트 115개와 `idea-db-mcp` binary 테스트 2개가
+모두 통과했음을 기록한다. 이 수치는 네트워크·Docker 수용 결과를 대신하지
+않는다.
 
-단위 회귀에는 잘못된 Project head, 최초 버전 중복, 계보 순환, 평가 근거의 다른 Project/Revision 참조, 근거 없는 공식 충족, 필수 기준과 상태 모순, 정성 관측, 벡터 순위 결합 후 limit, 시각순 기준선·평가 선택, 복원 이력·영수증 변조, 용량 경계 및 HTTP 인증/미디어 타입 검사가 포함된다.
+MCP intake 검사는 원문 Capture 저장, 준비 패킷의 벡터 비노출, recursive
+패키지 적용, Idea embedding과 Unicode source span 보존, 잘못된 출처의 원자적
+거절, 숫자·부정 변경의 명시적 검토, digest/handle 우회 차단, handle 재생,
+MCP hybrid 검색, 검토한 similar 링크, embedding provider 실패 시 write 없음까지
+확인했다. 사용한 profile은
+`embeddinggemma:300m@sha256:85462619ee721b466c5927d109d4cb765861907d5417b9109caebc4e614679f1/idea-body-v1`이다.
 
-HTTP 테스트는 실제 임시 loopback 포트를 사용한다. 제한된 샌드박스 안에서는 포트 바인딩이 거절되어 해당 5개가 실패했고, 로컬 포트를 허용한 환경에서 전체 88개가 통과했다. 이 환경 제약을 테스트 제외로 처리하지 않았다.
+이 intake의 Project/Schema/Core/Idea 구조는 검증 클라이언트가 공급한 결정적
+fixture다. 로컬 AI가 기획서를 자율적으로 해석해 원자화했다는 증거가 아니다.
+실제 Ollama 실행은 embedding 생성과 hybrid 검색 경로를 검증한다.
 
-검증용 컨테이너와 볼륨은 고유 이름으로 생성한 뒤 정리했다. 기존 사용자 DB나 다른 Docker 리소스는 초기화하지 않았다. GitHub 저장소 생성·push·원격 CI 실행은 하지 않았다. CI 파일은 향후 원격 저장소에 사용할 수 있도록 제공한다.
+## MCP 30단계 수명주기 r6
 
-## 30단계 수명주기 확장 검증
-
-2026-09-07에 `make lifecycle-check`를 실제 standalone 이미지로 실행했다. 자세한 [단계별 보고서](../test-results/lifecycle-20260907/report.md), [기계 판독 보고서](../test-results/lifecycle-20260907/report.json), [복구 검증 결과](../test-results/lifecycle-20260907/deployment-checks.json), [전체 export](../test-results/lifecycle-20260907/export.json)는 로컬 저장소의 `test-results/lifecycle-20260907/`에 보존한다. 이 생성 자료는 Git에서 제외하며, 재현 소스와 입력 기획서는 커밋한다.
+r6는 고객지원 분류에서 운영 장애 분석, 사내 지식 검토로 방향을 바꾸는 한
+Project를 MCP 경유로 30회 순차 커밋했다. FE/BE/Infra/ML/DL/LLM 역할, 재귀
+구성, 공유 Idea, 부분 변경과 파생 계보, 목표·기준선·관측·평가, 발생 시각과
+기록 시각을 함께 검증했다.
 
 | 항목 | 실제 결과 |
 |---|---|
-| 기획 이력 | 고객지원 → 운영 장애 분석 → 사내 지식 검토, 총 30단계·30개 커밋 순서 |
-| 데이터 크기 | 347개 기록, Revision 113개, Entity 92개, 원문 Capture 30개 |
-| 역할별 처리 | FE/BE/Infra/ML/DL/LLM 각각 실행 3건 + 부분 기획 변경 1건 |
-| 실제 실행 | 18개 작은 기술 실험 + 늦게 수집한 관측 1건, 산출물 19개 |
-| 목표 판단 | 기술 실험 18건 중 고정 기준 충족 16건, 미충족 2건; 미충족도 이력에 보존 |
-| 검색 | 한국어 질의 6개 모두 기대 ID Recall@5=1.0; 잘못된 역할 제외와 과거 Revision 검색 통과 |
-| 연결 | 유사도 관계 4개, 부분 의미 파생 6개, 원문 출처 참조 9개 재조회 검증 |
-| 시간 | 30개 `known_seq`/`known_at` 체크포인트, 공식 발표 3건의 직전·정각·직후·동일 순간 오프셋 검증 통과 |
-| 근거·평가 | 발생 전 숨김, 발생 후 관측·평가·목표 상태 노출, 값·환경·Artifact digest 검증 통과 |
-| 강제 종료 후 재시작 | 전체 content/digest 동일, 30단계·검색·근거·출처 재검증 통과 |
-| 빈 볼륨 복원 | 전체 content/digest 동일, 같은 읽기 전용 재검증 통과 |
-| 종료 | API 프로세스 상실 시 실패 종료, 정상 종료 시 exit 0 |
+| 데이터 | seq 30, domain record 403개: Revision 113, Entity 92, Embedding 56, Capture 30 등 |
+| 실행 근거 | 작은 기술 workload 18개와 늦게 도착한 관측 1개, Artifact 19개 |
+| 고정 rubric | workload 18개 중 충족 16개, 미충족 2개; 늦은 관측 평가 1개 별도 |
+| 검색 | 자연어 한국어 질의 6개에서 기대 ID Recall@5=1.0, 역할 제외와 과거 Revision 확인 |
+| 계보·출처 | 부분 파생 6개, Link 4개, Capture 출처 9개 재조회 |
+| 시간 | 30개 `known_seq`/`known_at`, publication 3개의 직전·정각·직후와 timezone 동치 확인 |
+| 복구 | 강제 재시작과 빈 볼륨 import 후 content/digest 동일 및 읽기 전용 재검증 통과 |
 
-합성 사건 시간은 2026년 8월이며, 서버 기록 시각은 실제 실행 구간인 `2026-09-07T03:38:57.823Z`부터 `03:39:02.145Z`다. 두 시각을 혼동하거나 서버 시계를 조작하지 않았다. 실행 시간으로 성능 보장을 추정하지 않는다. 전체 export digest는 `sha256:18d869d4f2a94896cc0fe824a72e6a662d262ba0bc09b751b2b1b91b13118692`이다.
+전체 export digest는
+`sha256:4ded30836b4af4c44d606d2a0b61aa616e399017a846353c21a9de3cb975e79b`이다.
+[기계 판독 보고서](../test-results/mcp-lifecycle-r6-20260907/report.json),
+[checkpoint](../test-results/mcp-lifecycle-r6-20260907/checkpoint.json),
+[전체 export](../test-results/mcp-lifecycle-r6-20260907/export.json)를 함께 보존한다.
 
-Main은 생성된 19개 산출물의 실제 바이트 SHA-256을 보고서와 Neo4j export의 Artifact에 대조하고, 관측 지표·값·환경과 고정 rubric의 평가 상태도 독립 확인했다. 기존 보고서 덮어쓰기 거절과 읽기 전용 재검증 실패 시 원본 보고서 보존도 확인했다.
+18개 workload는 실제로 실행한 작은 프로토타입이다. ML/DL은 합성 데이터의
+소규모 학습·평가이고 LLM 역할은 실제 생성 모델 추론이 아닌 결정적 adapter
+계약 fixture다. 이 결과로 상위 제품 기능의 완료나 팀 규모 성능을 주장하지
+않는다. Recall@5 역시 고정 질의의 기능 회귀이며 일반적인 의미 검색 품질
+평가가 아니다.
 
-시간 검증에서 미래 관측을 숨겨도 그 관측에 의존한 평가가 과거 조회에 보이는 결함을 발견했다. `evidence_cutoff_at`과 기준선 시작 시각을 상세 근거·목표 평가 필터에 적용했고, 수정 전 실패한 회귀 테스트가 수정 후 통과했다. 전체 Rust 88개, 기존 실DB 수용 12개, 확장 30단계를 통과했다.
+## 외부 리뷰와 조치
 
-실험은 제품 기능 전체의 구현을 의미하지 않는다. ML/DL은 합성 데이터의 실제 소규모 학습·평가이며, LLM은 모델 호출 없는 구조화 응답·인용 검증 fixture다. 검색 결과는 이 고정된 어휘 질의 집합의 기능 검증이며 실제 임베딩 모델의 의미 검색 품질은 평가하지 않았다. 범위와 재현 명령은 [lifecycle.md](lifecycle.md)에 있다.
+Grok 4.6과 Claude Fable 5.1 리뷰 원문은
+[`test-results/reviews/`](../test-results/reviews/)에 그대로 보존한다. 리뷰는
+코드 판독 결과이며 자체 실행 증명은 아니다. Main이 재현 가능성과 현재 코드를
+대조해 다음처럼 처리했다.
 
-## 보장 범위와 후속 작업
+- `query_vector`/`vector` 불일치, MCP apply 문서 불일치, 클라이언트 embedding·
+  검색 vector 우회, 새 Idea occurrence의 indexing 우회는 수정했다.
+- 준비 패킷은 pending 256개만 용량에 포함한다. 적용 이력은 삭제하지 않으며,
+  domain receipt와 `applied_seq`를 같은 Neo4j transaction에서 기록한다. 복원은
+  기존 handle을 삭제하지 않고 무효화한다.
+- embedding profile은 preview 패킷에 고정되고 apply 재시도는 모델을 호출하지
+  않는다. provider 오류와 profile 변경은 조용한 lexical fallback으로 처리하지
+  않는다.
+- 잘못된 head·빈 패키지·`validation.valid=false`를 embedding 전에 거절하는
+  경로와 Idea 전용 index coverage 필드는 현재 코드에 반영됐다. 이 변경까지
+  포함한 r6 Docker 수용 13개와 intake 12개가 통과했다.
+- 버려진 preview는 MCP `idea_upload_discard`로 철회하며 문서와 시각을 보존한다.
+  철회·복원 무효화·적용은 같은 저장 잠금에서 확인하고 marker 1건 갱신을 검증한다.
+- 대형 preview의 staging 크기 추정과 process interruption 경계에 관한 리뷰는
+  보수적 사전 한도와 원자적 applied marker로 보강했다. 실제 2 MiB 경계의
+  대규모 Ollama 호출 비용·지연은 별도 부하 시험으로 검증하지 않았다.
 
-- 단일 신뢰 소유자의 로컬 MVP다. 팀별 권한, HA, 인터넷 공개 운영은 구현 범위 밖이다.
-- 전체 네임스페이스 한도는 5,000개 레코드다. 읽기·쓰기는 Neo4j 잠금으로 직렬화하며, 초과 쓰기는 커밋 전에 거절한다. 팀 규모 부하 시험이나 p95 지연시간 측정은 수행하지 않았다.
-- 검색은 제한된 그래프의 어휘 점수와 클라이언트 공급 벡터의 정확 코사인을 RRF로 합친다. ANN이나 학습형 검색 품질을 보장하지 않는다. 실제 한국어 기획 자료의 검색 품질 평가는 후속 작업이다.
-- 3D 화면은 후속이다. 현재 GUI는 구성 트리·상세·검색·평가·이력을 제공하며, 복잡한 목표/관측/관계는 JSON 패키지로 입력한다.
-- DB는 LLM을 호출하지 않는다. 로컬 스킬과 명시적 실행 명령으로 초안을 만들고 검증·적용을 분리한다. 실제 유료 모델이나 Ollama 모델을 자동 설치·호출하지 않았다.
-- 외부 파일은 URI와 digest만 보관한다. 실제 바이트가 없는 자료는 manifest에서 미해결로 표시한다. 전체 복구에는 전체 export를 사용한다.
-- digest는 데이터 일관성 검사이며 출처 인증이 아니다. 원본 요청 본문이 없는 영수증의 request digest 진위는 증명할 수 없다.
-- Idea 교정의 숫자 변경 방지 검사는 일부 의미 변경만 잡는다. 의미 동등성을 자동 증명하지 않으므로 사람이 교정과 파생을 구분해야 한다.
-- Neo4j 5.26의 HTTP 트랜잭션 API에 고정되어 있다. 메이저 업그레이드 전에 드라이버와 복구 호환성을 다시 검증해야 한다.
+r4 MCP 수용의 동시 수정 단계에서는 Neo4j transient deadlock이 한 차례
+발생했다. 전체 operation을 새 transaction에서 제한적으로 재시도하도록 수정했고
+retry 단위 회귀와 최종 r6 동시 수정 검증이 모두 통과했다.
+
+## 과거 결과
+
+이전 문서의 `idea-db:acceptance` 이미지, Rust 테스트 88개, 실DB 수용 12개와
+347-record lifecycle 결과는 MCP 쓰기 경계 도입 전 버전에서 측정한 역사적
+baseline이다. 당시 6단계 diamond, 동시 same-head 한 승자, 시점 조회,
+publication 유효 시각, 역할 검색, 후보 승격, 복원·종료를 검증하는 데 유효했지만
+현재 빌드의 통과 수치로 사용하지 않는다. 현재 근거는 위 최종 정적 검사, r6 MCP
+lifecycle, MCP intake와 UI 결과다.
+
+## 보장하지 않는 범위
+
+- DB는 원자화의 의미적 완전성이나 AI 판단의 진실을 증명하지 않는다. source
+  span과 coverage ledger도 사람이 원문과 대조해야 한다.
+- 검색은 제한된 그래프의 한국어 lexical 점수와 클라이언트가 선택한 로컬
+  embedding profile의 exact cosine/RRF를 쓴다. ANN, 학습형 ranking, 실제 업무
+  corpus의 precision/recall은 검증하지 않았다.
+- 전체 namespace는 5,000 domain record로 제한한다. 팀 부하, HA, p95 latency,
+  인터넷 공개 운영과 권한 분리는 이번 검증 범위가 아니다.
+- Artifact는 URI와 digest를 저장한다. digest는 일관성 검사이며 출처 인증이나
+  외부 바이트의 영구 보관을 뜻하지 않는다.
+- 현재 UI는 2D 읽기 전용 탐색·검색·이력·근거 확인 범위다. 3D 화면은 검증하지
+  않았다.
+
+최종 재실행 중 발견한 검증 하네스 오류도 보존했다. 실제 벡터의 Rust/Python 숫자
+직렬화 차이를 HTTP 숫자 토큰 보존으로 해결했으며 digest 단언은 유지했다. macOS
+Bash 3의 빈 배열 nounset 처리도 수정했다. 실행 중 스크립트 수정으로 중단된 r5
+수명주기 로그는 실패 기록으로 남기고, 파일을 고정한 뒤 r6 전체 검증을 다시 실행하여 통과했다.
+
+최종 이미지는 `idea-db:mcp-check`의 r6 빌드다. 성공·실패 호스트 실행 로그와
+검증 컨테이너의 stdout/stderr 및 전체 `/logs`를 `test-results/`에 보존했다.
+MCP 전체 DB·영수증 내보내기 기본 확대는 자동 승인 검토가 민감 데이터 노출
+증가로 거절하여 제외했다. MCP export는 프로젝트 지정과 영수증 기본 제외를
+유지하며, 기존 전체 복구용 read-only HTTP export 계약은 변경하지 않았다.

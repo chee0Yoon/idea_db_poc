@@ -8,6 +8,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from mcp_client import call_tool, McpToolError, McpProtocolError
 
 
 def request(base, method, route, payload=None):
@@ -94,7 +95,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=os.environ.get("IDEA_DB_URL", "http://127.0.0.1:8080"))
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("capture", "validate", "apply", "replace", "search", "import"):
+    for name in ("capture", "validate", "preview", "apply", "replace", "search", "import"):
         item = sub.add_parser(name)
         item.add_argument("file", help="JSON request file, or - for stdin")
     sub.add_parser("state")
@@ -111,15 +112,17 @@ def main():
     if args.command in ("state", "export"):
         result = request(args.url, "GET", "/api/" + args.command)
     else:
-        routes = {
-            "capture": "/api/captures", "validate": "/api/packages/validate",
-            "apply": "/api/packages/apply", "replace": "/api/occurrences/replace",
-            "search": "/api/search", "import": "/api/import",
+        tools = {
+            "capture": "idea_capture_create", "validate": "idea_package_validate",
+            "preview": "idea_upload_preview", "apply": "idea_upload_apply",
+            "replace": "idea_occurrence_replace", "search": "idea_search", "import": "idea_import",
         }
         payload = read_json(args.file, 64 * 1024 * 1024 if args.command == "import" else 2 * 1024 * 1024)
         if args.command == "import":
             payload = {"document": payload}
-        result = request(args.url, "POST", routes[args.command], payload)
+        elif args.command == "preview":
+            payload = {"package": payload}
+        result = call_tool(tools[args.command], {"body": payload}, timeout=300)
     output_json(result, getattr(args, "output", None))
     if args.command == "validate" and not result.get("valid", False):
         raise SystemExit(2)
@@ -128,5 +131,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
+    except (OSError, subprocess.TimeoutExpired, ValueError, McpProtocolError, McpToolError) as exc:
         raise SystemExit(str(exc)) from exc

@@ -10,6 +10,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use unicode_normalization::UnicodeNormalization;
 
 pub type Params = BTreeMap<String, String>;
 fn bad(s: impl Into<String>) -> ApiError {
@@ -589,6 +590,27 @@ struct Search {
     limit: Option<usize>,
     #[serde(default)]
     vector: Option<Vector>,
+    #[serde(default)]
+    scope: SearchScope,
+    #[serde(default)]
+    root_revision_id: Option<String>,
+    #[serde(default = "default_search_nodes")]
+    max_nodes: usize,
+    #[serde(default = "default_search_kinds")]
+    kinds: Vec<RecordKind>,
+}
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SearchScope {
+    #[default]
+    Snapshot,
+    ProjectHistory,
+}
+fn default_search_nodes() -> usize {
+    limits::MAX_SNAPSHOT_NODES
+}
+fn default_search_kinds() -> Vec<RecordKind> {
+    vec![RecordKind::Revision]
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -597,32 +619,104 @@ struct Vector {
     dim: usize,
     values: Vec<f64>,
 }
-fn tokens(s: &str) -> Vec<String> {
-    let cs: Vec<_> = s.to_lowercase().chars().collect();
-    let mut out = Vec::new();
-    let mut w = String::new();
-    for c in &cs {
-        if c.is_alphanumeric() {
-            w.push(*c)
-        } else if !w.is_empty() {
-            out.push(std::mem::take(&mut w))
+fn is_hangul(c: char) -> bool {
+    matches!(c, '\u{1100}'..='\u{11ff}' | '\u{3130}'..='\u{318f}' | '\u{ac00}'..='\u{d7af}')
+}
+fn strip_particle(word: &str) -> String {
+    // Only remove common case/topic particles when a useful two-character stem remains.
+    const PARTICLES: [&str; 18] = [
+        "으로", "에서", "에게", "까지", "부터", "처럼", "보다", "하고", "이며", "이고", "은", "는",
+        "이", "가", "을", "를", "의", "에",
+    ];
+    for particle in PARTICLES {
+        if let Some(stem) = word.strip_suffix(particle) {
+            if stem.chars().count() >= 2 && stem.chars().all(|c| c.is_alphanumeric()) {
+                return stem.to_string();
+            }
         }
     }
-    if !w.is_empty() {
-        out.push(w)
+    word.to_string()
+}
+fn words(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    for c in s.nfc().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            word.push(c);
+        } else if !word.is_empty() {
+            out.push(strip_particle(&std::mem::take(&mut word)));
+        }
     }
-    out.extend(
-        cs.windows(2)
-            .filter(|x| x.iter().all(|c| ('\u{3400}'..='\u{9fff}').contains(c)))
-            .map(|x| x.iter().collect()),
-    );
+    if !word.is_empty() {
+        out.push(strip_particle(&word));
+    }
     out
 }
-fn lex(q: &[String], s: &str) -> f64 {
-    let h = tokens(s);
-    q.iter()
-        .map(|x| h.iter().filter(|y| *y == x).count() as f64)
-        .sum()
+#[derive(Default)]
+struct LexicalFeatures {
+    words: HashMap<String, usize>,
+    grams: HashSet<String>,
+}
+fn lexical_features(s: &str) -> LexicalFeatures {
+    let mut out = LexicalFeatures::default();
+    for word in words(s) {
+        *out.words.entry(word.clone()).or_default() += 1;
+        let chars: Vec<char> = word.chars().collect();
+        if chars.iter().all(|c| is_hangul(*c)) {
+            for width in [2, 3] {
+                for gram in chars.windows(width) {
+                    out.grams.insert(gram.iter().collect());
+                }
+            }
+        }
+    }
+    out
+}
+fn lex(q: &LexicalFeatures, s: &str) -> f64 {
+    let haystack = lexical_features(s);
+    let exact: usize = q
+        .words
+        .iter()
+        .map(|(word, count)| haystack.words.get(word).copied().unwrap_or(0).min(*count))
+        .sum();
+    let grams = q.grams.intersection(&haystack.grams).count();
+    let covered_words = q
+        .words
+        .keys()
+        .filter(|query_word| {
+            haystack.words.keys().any(|candidate_word| {
+                candidate_word == *query_word || candidate_word.contains(query_word.as_str())
+            })
+        })
+        .count();
+    // One short/generic fragment is too weak. A normalized word or two independent
+    // Hangul n-grams are required before a row participates in ranking.
+    if (q.words.len() >= 2 && covered_words < 2)
+        || (q.words.len() < 2 && exact == 0 && covered_words == 0 && grams < 2)
+    {
+        0.0
+    } else {
+        exact as f64 * 3.0 + grams as f64
+    }
+}
+fn canonical_role(role: &str) -> String {
+    match role
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_'], "")
+        .as_str()
+    {
+        "fe" | "frontend" => "frontend".into(),
+        "be" | "backend" => "backend".into(),
+        "infra" | "infrastructure" => "infrastructure".into(),
+        other => other.to_string(),
+    }
+}
+fn roles_match(requested: &HashSet<String>, occurrence: &[String]) -> bool {
+    occurrence
+        .iter()
+        .map(|role| canonical_role(role))
+        .any(|role| requested.contains(&role))
 }
 fn cosine(a: &[f64], b: &[f64]) -> Option<f64> {
     if a.len() != b.len() || a.is_empty() {
@@ -656,24 +750,170 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
     if let Some(x) = q.effective_at {
         p.insert("effective_at".into(), x);
     }
+    if let Some(x) = &q.root_revision_id {
+        p.insert("root_revision_id".into(), x.clone());
+    }
     let v = view(ctx, &p)?;
     let s = stage(&p)?;
     let limit = q.limit.unwrap_or(limits::DEFAULT_SEARCH_LIMIT);
     if limit == 0 || limit > limits::MAX_SEARCH_LIMIT {
         return Err(bad("limit must be 1..=200"));
     }
-    let (root_id, meta) = selected(&v, &p, s, &q.project_id)?;
-    let Some(root_id) = root_id else {
-        return Ok(
-            json!({"mode":"lexical","stage":s.as_str(),"selected_by":meta,"results":[],"related":[],"candidates":[],"vector_status":{"requested":q.vector.is_some(),"used":false},"eligible_revisions":0,"truncated":false}),
+    if q.max_nodes == 0 || q.max_nodes > limits::MAX_SNAPSHOT_NODES {
+        return Err(bad("max_nodes must be 1..=5000"));
+    }
+    let allowed_kinds = [
+        RecordKind::Revision,
+        RecordKind::Capture,
+        RecordKind::Observation,
+        RecordKind::Goal,
+        RecordKind::Assessment,
+        RecordKind::Artifact,
+    ];
+    if q.kinds.is_empty() || q.kinds.iter().any(|kind| !allowed_kinds.contains(kind)) {
+        return Err(bad(
+            "kinds must contain revision, capture, observation, goal, assessment, or artifact",
+        ));
+    }
+    if q.lanes
+        .iter()
+        .any(|lane| lane != "official" && lane != "candidate")
+    {
+        return Err(bad("lanes must contain official and/or candidate"));
+    }
+    let official_lane = q.lanes.is_empty() || q.lanes.iter().any(|lane| lane == "official");
+    let candidate_lane = q.lanes.is_empty() || q.lanes.iter().any(|lane| lane == "candidate");
+    let (selected_root, meta) = selected(&v, &p, s, &q.project_id)?;
+
+    #[derive(Clone)]
+    struct SearchOccurrence {
+        root_revision_id: String,
+        occurrence: graph::Occurrence,
+    }
+    let mut eligible = Vec::new();
+    let mut eligible_set = HashSet::new();
+    let mut occurrences: HashMap<String, Vec<SearchOccurrence>> = HashMap::new();
+    let mut truncated = false;
+    let mut add_root = |root_id: &str| {
+        let walked = graph::walk(
+            &v.ctx,
+            root_id,
+            Limits {
+                max_nodes: q.max_nodes,
+                max_depth: graph::MAX_DEPTH,
+            },
         );
+        truncated |= walked.truncated;
+        for occurrence in walked.occurrences {
+            if !eligible_set.contains(&occurrence.revision_id) && eligible_set.len() >= q.max_nodes
+            {
+                truncated = true;
+                continue;
+            }
+            if eligible_set.insert(occurrence.revision_id.clone()) {
+                eligible.push(occurrence.revision_id.clone());
+            }
+            occurrences
+                .entry(occurrence.revision_id.clone())
+                .or_default()
+                .push(SearchOccurrence {
+                    root_revision_id: root_id.to_string(),
+                    occurrence,
+                });
+        }
     };
-    let walk = graph::walk(&v.ctx, &root_id, Limits::default());
-    let words = tokens(&q.query);
-    let mut em: HashMap<String, &EmbeddingData> = HashMap::new();
+    if official_lane {
+        match q.scope {
+            SearchScope::Snapshot => {
+                if let Some(root_id) = &selected_root {
+                    add_root(root_id);
+                }
+            }
+            SearchScope::ProjectHistory => {
+                let mut roots = if s == Stage::Official {
+                    v.ctx
+                        .records
+                        .values()
+                        .filter_map(|record| {
+                            record
+                                .as_publication()
+                                .filter(|publication| {
+                                    publication.project_id == q.project_id
+                                        && v.effective.as_ref().is_none_or(|cut| {
+                                            time(&publication.published_at, "published_at")
+                                                .is_ok_and(|at| at <= *cut)
+                                        })
+                                })
+                                .map(|publication| {
+                                    (record.seq, publication.root_revision_id.clone())
+                                })
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    v.ctx
+                        .records
+                        .values()
+                        .filter(|record| {
+                            record
+                                .as_revision()
+                                .is_some_and(|revision| revision.entity_id == q.project_id)
+                        })
+                        .map(|record| (record.seq, record.id.clone()))
+                        .collect::<Vec<_>>()
+                };
+                roots.sort();
+                for (_, root_id) in roots {
+                    add_root(&root_id);
+                }
+                // Project-owned orphan/imported revisions are searchable in history,
+                // but have no role occurrence until a project root composes them.
+                let mut owned = if s == Stage::Working {
+                    v.ctx
+                        .records
+                        .values()
+                        .filter(|record| {
+                            record.as_revision().is_some_and(|revision| {
+                                v.ctx
+                                    .records
+                                    .get(&revision.entity_id)
+                                    .and_then(StoredRecord::as_entity)
+                                    .is_some_and(|entity| entity.project_id == q.project_id)
+                            })
+                        })
+                        .map(|record| (record.seq, record.id.clone()))
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                owned.sort();
+                for (_, revision_id) in owned {
+                    if eligible_set.insert(revision_id.clone()) {
+                        if eligible.len() >= q.max_nodes {
+                            eligible_set.remove(&revision_id);
+                            truncated = true;
+                            break;
+                        }
+                        eligible.push(revision_id);
+                    }
+                }
+            }
+        }
+    }
+    let query_features = lexical_features(&q.query);
+    let requested_roles: HashSet<String> =
+        q.roles.iter().map(|role| canonical_role(role)).collect();
+    let mut embeddings: HashMap<(String, String, usize), &StoredRecord> = HashMap::new();
     for r in v.ctx.records.values() {
         if let Some(e) = r.as_embedding() {
-            em.insert(e.revision_id.clone(), e);
+            if e.dim == e.values.len() && e.values.iter().all(|value| value.is_finite()) {
+                let key = (e.revision_id.clone(), e.model.clone(), e.dim);
+                let replace = embeddings
+                    .get(&key)
+                    .is_none_or(|old| (r.seq, &r.id) > (old.seq, &old.id));
+                if replace {
+                    embeddings.insert(key, r);
+                }
+            }
         }
     }
     if let Some(vector) = &q.vector {
@@ -685,56 +925,70 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
         }
     }
     let vector = q.vector.as_ref();
-    let mut candidates = Vec::new();
-    for id in &walk.revisions {
-        let r = &v.ctx.records[id];
-        let d = r.as_revision().unwrap();
-        if !q.tags.iter().all(|x| d.tags.contains(x)) {
-            continue;
-        }
-        let occ: Vec<_> = walk
-            .occurrences
-            .iter()
-            .filter(|x| x.revision_id == *id)
-            .collect();
-        if !q.roles.is_empty()
-            && !occ
-                .iter()
-                .any(|x| x.roles.iter().any(|z| q.roles.contains(z)))
-        {
-            continue;
-        }
-        let (_, _, title) = owner(&v.ctx.records, r);
-        let vs = vector.and_then(|x| {
-            em.get(id)
-                .filter(|e| e.model == x.model && e.dim == x.dim)
-                .and_then(|e| cosine(&x.values, &e.values))
-        });
-        let lexical = lex(
-            &words,
-            &format!("{} {} {}", title, d.body, d.tags.join(" ")),
-        );
-        if lexical > 0.0 || vs.is_some() || words.is_empty() && vector.is_none() {
-            candidates.push((id.clone(), lexical, vs, occ));
+    struct RevisionHit {
+        id: String,
+        lexical: f64,
+        vector: Option<f64>,
+        occurrences: Vec<SearchOccurrence>,
+    }
+    let mut hits = Vec::new();
+    let mut role_mismatches = Vec::new();
+    if q.kinds.contains(&RecordKind::Revision) {
+        for id in &eligible {
+            let r = &v.ctx.records[id];
+            let d = r.as_revision().unwrap();
+            if !q.tags.iter().all(|x| d.tags.contains(x)) {
+                continue;
+            }
+            let occ = occurrences.get(id).cloned().unwrap_or_default();
+            let (_, _, title) = owner(&v.ctx.records, r);
+            let vs = vector.and_then(|x| {
+                embeddings
+                    .get(&(id.clone(), x.model.clone(), x.dim))
+                    .and_then(|record| record.as_embedding())
+                    .and_then(|embedding| cosine(&x.values, &embedding.values))
+            });
+            let lexical = lex(
+                &query_features,
+                &format!("{} {} {}", title, d.body, d.tags.join(" ")),
+            );
+            if lexical > 0.0 || vs.is_some() || query_features.words.is_empty() && vector.is_none()
+            {
+                if !requested_roles.is_empty()
+                    && !occ
+                        .iter()
+                        .any(|item| roles_match(&requested_roles, &item.occurrence.roles))
+                {
+                    role_mismatches.push((id.clone(), occ));
+                } else {
+                    hits.push(RevisionHit {
+                        id: id.clone(),
+                        lexical,
+                        vector: vs,
+                        occurrences: occ,
+                    });
+                }
+            }
         }
     }
-    let mut lexical = candidates
+    let mut lexical = hits
         .iter()
-        .filter(|candidate| candidate.1 > 0.0)
+        .filter(|candidate| candidate.lexical > 0.0)
         .collect::<Vec<_>>();
     lexical.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
+        b.lexical
+            .partial_cmp(&a.lexical)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.0.cmp(&b.0))
+            .then(a.id.cmp(&b.id))
     });
     let lexical_rank: HashMap<_, _> = lexical
         .iter()
         .enumerate()
-        .map(|(index, candidate)| (candidate.0.clone(), index + 1))
+        .map(|(index, candidate)| (candidate.id.clone(), index + 1))
         .collect();
-    let mut vr = candidates
+    let mut vr = hits
         .iter()
-        .filter_map(|x| x.2.map(|s| (x.0.clone(), s)))
+        .filter_map(|hit| hit.vector.map(|score| (hit.id.clone(), score)))
         .collect::<Vec<_>>();
     vr.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let vpos: HashMap<_, _> = vr
@@ -742,24 +996,25 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
         .enumerate()
         .map(|(i, (id, _))| (id.clone(), i + 1))
         .collect();
-    candidates.sort_by(|a, b| {
-        let score = |candidate: &(String, f64, Option<f64>, Vec<&graph::Occurrence>)| {
+    hits.sort_by(|a, b| {
+        let score = |candidate: &RevisionHit| {
             lexical_rank
-                .get(&candidate.0)
+                .get(&candidate.id)
                 .map_or(0.0, |rank| 1.0 / (60.0 + *rank as f64))
                 + vpos
-                    .get(&candidate.0)
+                    .get(&candidate.id)
                     .map_or(0.0, |rank| 1.0 / (60.0 + *rank as f64))
         };
         score(b)
             .partial_cmp(&score(a))
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.0.cmp(&b.0))
+            .then(a.id.cmp(&b.id))
     });
-    let results = candidates
+    let results = hits
         .iter()
         .take(limit)
-        .map(|(id, _, _, occurrences)| {
+        .map(|hit| {
+            let id = &hit.id;
             let record = &v.ctx.records[id];
             let revision = record.as_revision().unwrap();
             let (entity_id, entity_kind, title) = owner(&v.ctx.records, record);
@@ -774,9 +1029,10 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
                 "title": title,
                 "snippet": short(&revision.body, 400),
                 "tags": revision.tags,
-                "occurrences": occurrences.iter().map(|occurrence| json!({
-                    "slot_path": occurrence.slot_path,
-                    "roles": occurrence.roles,
+                "occurrences": hit.occurrences.iter().map(|item| json!({
+                    "root_revision_id": item.root_revision_id,
+                    "slot_path": item.occurrence.slot_path,
+                    "roles": item.occurrence.roles,
                 })).collect::<Vec<_>>(),
                 "lexical_rank": lexical_rank,
                 "vector_rank": vector_rank,
@@ -786,131 +1042,227 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
             })
         })
         .collect::<Vec<_>>();
-    let ids: HashSet<_> = walk.revisions.iter().cloned().collect();
-    let direct_entities: HashSet<&str> = results
+    let direct_ids: HashSet<String> = results
         .iter()
-        .filter_map(|row| row["entity_id"].as_str())
+        .filter_map(|row| row["revision_id"].as_str().map(str::to_string))
         .collect();
-    let direct_revisions: HashSet<&str> = results
+    let direct_entities: HashSet<String> = results
         .iter()
-        .filter_map(|row| row["revision_id"].as_str())
+        .filter_map(|row| row["entity_id"].as_str().map(str::to_string))
         .collect();
-    let related = if q.roles.is_empty() {
-        vec![]
-    } else {
-        let mut rows = Vec::new();
-        let mut seen = HashSet::new();
-        let mut relation_edges = Vec::new();
-        for record in v.ctx.records.values() {
-            if let Some(link) = record.as_link().filter(|link| {
-                matches!(
-                    link.link_type,
-                    LinkType::Applies
-                        | LinkType::Implements
-                        | LinkType::Depends
-                        | LinkType::Derived
-                )
-            }) {
-                relation_edges.push((link.from_id.clone(), link.to_id.clone(), link.link_type));
+    let revisions_for_endpoint = |endpoint: &str| -> Vec<String> {
+        match v.ctx.records.get(endpoint) {
+            Some(record)
+                if record.kind() == RecordKind::Revision && eligible_set.contains(endpoint) =>
+            {
+                vec![endpoint.to_string()]
             }
-            if let Some(entity) = record.as_entity() {
-                for source_id in &entity.derived_from {
-                    relation_edges.push((record.id.clone(), source_id.clone(), LinkType::Derived));
-                }
-            }
-        }
-        for (from_id, to_id, link_type) in relation_edges {
-            let endpoint_matches_query = [&from_id, &to_id].iter().any(|endpoint| {
-                let revision_ids: Vec<&String> = match v.ctx.records.get(*endpoint) {
-                    Some(record) if record.kind() == RecordKind::Revision => vec![&record.id],
-                    Some(record) if record.kind() == RecordKind::Entity => walk
-                        .revisions
-                        .iter()
-                        .filter(|revision_id| {
-                            v.ctx
-                                .records
-                                .get(*revision_id)
-                                .and_then(StoredRecord::as_revision)
-                                .is_some_and(|revision| revision.entity_id == record.id)
-                        })
-                        .collect(),
-                    _ => vec![],
-                };
-                revision_ids.into_iter().any(|revision_id| {
-                    let revision = &v.ctx.records[revision_id];
-                    let data = revision.as_revision().unwrap();
-                    let (_, _, title) = owner(&v.ctx.records, revision);
-                    lex(
-                        &words,
-                        &format!("{} {} {}", title, data.body, data.tags.join(" ")),
-                    ) > 0.0
+            Some(record) if record.kind() == RecordKind::Entity => eligible
+                .iter()
+                .filter(|id| {
+                    v.ctx
+                        .records
+                        .get(*id)
+                        .and_then(StoredRecord::as_revision)
+                        .is_some_and(|revision| revision.entity_id == record.id)
                 })
-            });
-            if !endpoint_matches_query
-                && !direct_entities.contains(from_id.as_str())
-                && !direct_entities.contains(to_id.as_str())
-                && !direct_revisions.contains(from_id.as_str())
-                && !direct_revisions.contains(to_id.as_str())
+                .cloned()
+                .collect(),
+            _ => vec![],
+        }
+    };
+    let mut related = Vec::new();
+    let mut related_seen: HashSet<String> = HashSet::new();
+    let mut relation_records = v
+        .ctx
+        .records
+        .values()
+        .filter(|record| record.as_link().is_some())
+        .collect::<Vec<_>>();
+    relation_records.sort_by_key(|record| {
+        let link = record.as_link().unwrap();
+        let priority = match (
+            link.link_type,
+            link.similarity.as_ref().map(|value| value.score),
+        ) {
+            (LinkType::Contradict, _) => 0,
+            (LinkType::Similar, Some(score)) if score < 0.0 => 1,
+            (LinkType::Similar, Some(score)) if score > 0.0 => 2,
+            _ => 3,
+        };
+        (priority, record.seq, record.id.clone())
+    });
+    for record in relation_records {
+        let Some(link) = record.as_link() else {
+            continue;
+        };
+        if !matches!(
+            link.link_type,
+            LinkType::Applies
+                | LinkType::Implements
+                | LinkType::Depends
+                | LinkType::Derived
+                | LinkType::Similar
+                | LinkType::Contradict
+        ) {
+            continue;
+        }
+        let from_direct =
+            direct_ids.contains(&link.from_id) || direct_entities.contains(&link.from_id);
+        let to_direct = direct_ids.contains(&link.to_id) || direct_entities.contains(&link.to_id);
+        if !from_direct && !to_direct {
+            continue;
+        }
+        let similarity_score = link.similarity.as_ref().map(|similarity| similarity.score);
+        if link.link_type == LinkType::Similar && similarity_score == Some(0.0) {
+            continue;
+        }
+        let other = if from_direct {
+            &link.to_id
+        } else {
+            &link.from_id
+        };
+        for revision_id in revisions_for_endpoint(other) {
+            if direct_ids.contains(&revision_id) {
+                continue;
+            }
+            let occurrence = occurrences.get(&revision_id).cloned().unwrap_or_default();
+            if !matches!(link.link_type, LinkType::Similar | LinkType::Contradict)
+                && !requested_roles.is_empty()
+                && occurrence
+                    .iter()
+                    .any(|item| roles_match(&requested_roles, &item.occurrence.roles))
             {
                 continue;
             }
-            for endpoint in [&from_id, &to_id] {
-                let revision_ids: Vec<String> = match v.ctx.records.get(endpoint) {
-                    Some(record) if record.kind() == RecordKind::Revision => {
-                        vec![record.id.clone()]
-                    }
-                    Some(record) if record.kind() == RecordKind::Entity => walk
-                        .revisions
-                        .iter()
-                        .filter(|revision_id| {
-                            v.ctx
-                                .records
-                                .get(*revision_id)
-                                .and_then(StoredRecord::as_revision)
-                                .is_some_and(|revision| revision.entity_id == record.id)
+            let reason = match (link.link_type, similarity_score) {
+                (LinkType::Similar, Some(score)) if score < 0.0 => "dissimilarity",
+                (LinkType::Similar, _) => "similarity",
+                (LinkType::Contradict, _) => "contradiction",
+                _ => "role_mismatch",
+            };
+            if related_seen.insert(revision_id.clone()) {
+                let target = &v.ctx.records[&revision_id];
+                let (entity_id, _, title) = owner(&v.ctx.records, target);
+                related.push(json!({"revision_id":revision_id,"record_id":revision_id,"kind":"revision","entity_id":entity_id,"title":title,"reason":reason,"counterevidence":matches!(reason,"dissimilarity"|"contradiction"),"link_type":link.link_type,"similarity_score":similarity_score,"roles":occurrence.iter().flat_map(|item|item.occurrence.roles.clone()).collect::<BTreeSet<_>>() }));
+            }
+        }
+        if link.link_type == LinkType::Contradict && revisions_for_endpoint(other).is_empty() {
+            let Some(other_record) = v.ctx.records.get(other) else {
+                continue;
+            };
+            let scoped = match &other_record.data {
+                RecordData::Capture(capture) => {
+                    capture
+                        .project_id
+                        .as_deref()
+                        .is_none_or(|project| project == q.project_id)
+                        && capture.occurred_at.as_ref().is_none_or(|at| {
+                            v.effective.as_ref().is_none_or(|cut| {
+                                time(at, "occurred_at").is_ok_and(|value| value <= *cut)
+                            })
                         })
-                        .cloned()
-                        .collect(),
-                    _ => vec![],
+                }
+                RecordData::Observation(observation) => {
+                    observation.project_id == q.project_id
+                        && v.effective.as_ref().is_none_or(|cut| {
+                            time(&observation.occurred_at, "occurred_at")
+                                .is_ok_and(|value| value <= *cut)
+                        })
+                }
+                RecordData::Goal(goal) => goal.project_id == q.project_id,
+                RecordData::Assessment(assessment) => {
+                    assessment_visible(&v, assessment)
+                        && v.ctx
+                            .records
+                            .get(&assessment.baseline_id)
+                            .and_then(StoredRecord::as_baseline)
+                            .and_then(|baseline| v.ctx.records.get(&baseline.goal_id))
+                            .and_then(StoredRecord::as_goal)
+                            .is_some_and(|goal| goal.project_id == q.project_id)
+                }
+                _ => false,
+            };
+            if scoped && related_seen.insert(other.clone()) {
+                let (title, snippet) = match &other_record.data {
+                    RecordData::Capture(value) => (
+                        value.source_ref.clone().unwrap_or_else(|| "capture".into()),
+                        short(&value.content, 400),
+                    ),
+                    RecordData::Observation(value) => (
+                        value.metric.clone().unwrap_or_else(|| "observation".into()),
+                        short(&value.note, 400),
+                    ),
+                    RecordData::Goal(value) => {
+                        (value.statement.clone(), short(&value.statement, 400))
+                    }
+                    RecordData::Assessment(value) => (
+                        format!("{} assessment", value.evaluator),
+                        short(&value.note, 400),
+                    ),
+                    _ => (other.clone(), String::new()),
                 };
-                for revision_id in revision_ids {
-                    if !ids.contains(&revision_id) || !seen.insert(revision_id.clone()) {
-                        continue;
+                related.push(json!({"record_id":other_record.id,"kind":other_record.kind().as_str(),"title":title,"snippet":snippet,"reason":"contradiction","counterevidence":true,"link_type":link.link_type}));
+            }
+        }
+    }
+    for (id, occ) in role_mismatches {
+        if related_seen.insert(id.clone()) {
+            let record = &v.ctx.records[&id];
+            let (entity_id, _, title) = owner(&v.ctx.records, record);
+            let lineage_reaches_requested_role = v
+                .ctx
+                .records
+                .get(&entity_id)
+                .and_then(StoredRecord::as_entity)
+                .is_some_and(|entity| {
+                    entity.derived_from.iter().any(|source| {
+                        revisions_for_endpoint(source)
+                            .iter()
+                            .any(|source_revision| {
+                                occurrences.get(source_revision).is_some_and(|uses| {
+                                    uses.iter().any(|item| {
+                                        roles_match(&requested_roles, &item.occurrence.roles)
+                                    })
+                                })
+                            })
+                    })
+                });
+            related.push(json!({"revision_id":id,"record_id":id,"kind":"revision","entity_id":entity_id,"title":title,"reason":"role_mismatch","counterevidence":false,"roles":occ.iter().flat_map(|item|item.occurrence.roles.clone()).collect::<BTreeSet<_>>(),"link_type":if lineage_reaches_requested_role { Some("derived") } else { None } }));
+        }
+    }
+    if q.scope == SearchScope::ProjectHistory {
+        for entity_id in &direct_entities {
+            if let Some(entity) = v
+                .ctx
+                .records
+                .get(entity_id)
+                .and_then(StoredRecord::as_entity)
+            {
+                for source in &entity.derived_from {
+                    for revision_id in revisions_for_endpoint(source) {
+                        if direct_ids.contains(&revision_id)
+                            || !related_seen.insert(revision_id.clone())
+                        {
+                            continue;
+                        }
+                        let target = &v.ctx.records[&revision_id];
+                        let (source_entity_id, _, title) = owner(&v.ctx.records, target);
+                        related.push(json!({"revision_id":revision_id,"entity_id":source_entity_id,"title":title,"reason":"derived_from","link_type":"derived"}));
                     }
-                    let occurrences: Vec<_> = walk
-                        .occurrences
-                        .iter()
-                        .filter(|occurrence| occurrence.revision_id == revision_id)
-                        .collect();
-                    if occurrences.iter().any(|occurrence| {
-                        occurrence.roles.iter().any(|role| q.roles.contains(role))
-                    }) {
-                        continue;
-                    }
-                    let revision = &v.ctx.records[&revision_id];
-                    let (entity_id, _, title) = owner(&v.ctx.records, revision);
-                    rows.push(json!({
-                        "revision_id": revision_id,
-                        "entity_id": entity_id,
-                        "title": title,
-                        "reason": "role_mismatch",
-                        "roles": occurrences.first().map(|occurrence| occurrence.roles.clone()).unwrap_or_default(),
-                        "link_type": link_type,
-                    }));
                 }
             }
         }
-        rows
-    };
-    let candidates = if q.lanes.is_empty() || q.lanes.iter().any(|x| x == "candidate") {
+    }
+    let candidates = if candidate_lane && requested_roles.is_empty() {
         let mut lane = v
             .ctx
             .records
             .values()
             .filter_map(|r| match &r.data {
                 RecordData::Candidate(c) if c.project_id == q.project_id => {
-                    let score = lex(&words, &format!("{} {}", c.title, c.body));
-                    if words.is_empty() || score > 0.0 {
+                    let score = lex(&query_features, &format!("{} {}", c.title, c.body));
+                    if query_features.words.is_empty() || score > 0.0 {
                         Some((r, c, score))
                     } else {
                         None
@@ -945,32 +1297,275 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
     } else {
         vec![]
     };
-    let matching = walk
-        .revisions
+    let matching = eligible
         .iter()
         .filter(|id| {
             vector
-                .and_then(|x| em.get(*id).filter(|e| e.model == x.model && e.dim == x.dim))
+                .and_then(|x| embeddings.get(&(id.to_string(), x.model.clone(), x.dim)))
                 .is_some()
         })
         .count();
+    let eligible_ideas = eligible
+        .iter()
+        .filter(|id| {
+            let Some(record) = v.ctx.records.get(id.as_str()) else {
+                return false;
+            };
+            let (_, entity_kind, _) = owner(&v.ctx.records, record);
+            entity_kind == "idea"
+                && (requested_roles.is_empty()
+                    || occurrences.get(id.as_str()).is_some_and(|uses| {
+                        uses.iter()
+                            .any(|item| roles_match(&requested_roles, &item.occurrence.roles))
+                    }))
+        })
+        .collect::<Vec<_>>();
+    let matching_ideas = eligible_ideas
+        .iter()
+        .filter(|id| {
+            vector
+                .and_then(|x| embeddings.get(&(id.to_string(), x.model.clone(), x.dim)))
+                .is_some()
+        })
+        .count();
+    let target_roles = |target: &str| occurrences.get(target).cloned().unwrap_or_default();
+    let observation_in_scope = |observation: &ObservationData| {
+        observation.project_id == q.project_id
+            && observation
+                .target_revision_id
+                .as_ref()
+                .is_none_or(|id| eligible_set.contains(id))
+            && v.effective.as_ref().is_none_or(|cut| {
+                time(&observation.occurred_at, "occurred_at").is_ok_and(|at| at <= *cut)
+            })
+    };
+    let mut records = Vec::new();
+    if official_lane {
+        for record in v.ctx.records.values() {
+            if record.kind() == RecordKind::Revision || !q.kinds.contains(&record.kind()) {
+                continue;
+            }
+            let (eligible_record, associated_target, title, snippet, search_text) = match &record
+                .data
+            {
+                RecordData::Capture(capture) => {
+                    let linked_target = eligible
+                        .iter()
+                        .find(|id| {
+                            v.ctx
+                                .records
+                                .get(id.as_str())
+                                .and_then(StoredRecord::as_revision)
+                                .is_some_and(|revision| {
+                                    (revision.source.capture_id.as_deref() == Some(&record.id)
+                                        || revision
+                                            .source
+                                            .source_anchor
+                                            .as_ref()
+                                            .is_some_and(|anchor| anchor.capture_id == record.id))
+                                        && (requested_roles.is_empty()
+                                            || occurrences.get(id.as_str()).is_some_and(|uses| {
+                                                uses.iter().any(|item| {
+                                                    roles_match(
+                                                        &requested_roles,
+                                                        &item.occurrence.roles,
+                                                    )
+                                                })
+                                            }))
+                                })
+                        })
+                        .cloned()
+                        .or_else(|| {
+                            v.ctx.records.values().find_map(|candidate| {
+                                candidate
+                                    .as_observation()
+                                    .filter(|observation| {
+                                        observation.capture_id.as_deref() == Some(&record.id)
+                                            && observation_in_scope(observation)
+                                            && (requested_roles.is_empty()
+                                                || observation
+                                                    .target_revision_id
+                                                    .as_ref()
+                                                    .is_some_and(|target| {
+                                                        occurrences.get(target).is_some_and(
+                                                            |uses| {
+                                                                uses.iter().any(|item| {
+                                                                    roles_match(
+                                                                        &requested_roles,
+                                                                        &item.occurrence.roles,
+                                                                    )
+                                                                })
+                                                            },
+                                                        )
+                                                    }))
+                                    })
+                                    .and_then(|observation| observation.target_revision_id.clone())
+                            })
+                        });
+                    let effective = capture.occurred_at.as_ref().is_none_or(|at| {
+                        v.effective.as_ref().is_none_or(|cut| {
+                            time(at, "occurred_at").is_ok_and(|value| value <= *cut)
+                        })
+                    });
+                    let title = capture
+                        .source_ref
+                        .clone()
+                        .unwrap_or_else(|| "capture".into());
+                    (
+                        effective
+                            && (capture.project_id.as_deref() == Some(&q.project_id)
+                                || linked_target.is_some()),
+                        linked_target,
+                        title.clone(),
+                        short(&capture.content, 400),
+                        format!("{title} {}", capture.content),
+                    )
+                }
+                RecordData::Observation(observation) => {
+                    let title = observation
+                        .metric
+                        .clone()
+                        .unwrap_or_else(|| "observation".into());
+                    (
+                        observation_in_scope(observation),
+                        observation.target_revision_id.clone(),
+                        title.clone(),
+                        short(&observation.note, 400),
+                        format!(
+                            "{title} {} {} {:?} {} {} {}",
+                            observation.note,
+                            observation.method.as_deref().unwrap_or(""),
+                            observation.status,
+                            observation
+                                .value
+                                .as_ref()
+                                .map(Value::to_string)
+                                .unwrap_or_default(),
+                            observation.unit.as_deref().unwrap_or(""),
+                            serde_json::to_string(&observation.environment).unwrap_or_default(),
+                        ),
+                    )
+                }
+                RecordData::Goal(goal) => (
+                    goal.project_id == q.project_id
+                        && eligible_set.contains(&goal.scope.target_revision_id),
+                    Some(goal.scope.target_revision_id.clone()),
+                    goal.statement.clone(),
+                    short(&goal.statement, 400),
+                    format!(
+                        "{} {}",
+                        goal.statement,
+                        serde_json::to_string(&goal.criteria).unwrap_or_default()
+                    ),
+                ),
+                RecordData::Assessment(assessment) => {
+                    let belongs = v
+                        .ctx
+                        .records
+                        .get(&assessment.baseline_id)
+                        .and_then(StoredRecord::as_baseline)
+                        .and_then(|baseline| v.ctx.records.get(&baseline.goal_id))
+                        .and_then(StoredRecord::as_goal)
+                        .is_some_and(|goal| goal.project_id == q.project_id);
+                    (
+                        belongs
+                            && eligible_set.contains(&assessment.target_revision_id)
+                            && assessment_visible(&v, assessment),
+                        Some(assessment.target_revision_id.clone()),
+                        format!("{} assessment", assessment.evaluator),
+                        short(&assessment.note, 400),
+                        format!(
+                            "{} {} {:?}",
+                            assessment.evaluator, assessment.note, assessment.status
+                        ),
+                    )
+                }
+                RecordData::Artifact(artifact) => {
+                    let target = v.ctx.records.values().find_map(|candidate| {
+                        candidate
+                            .as_observation()
+                            .filter(|observation| {
+                                observation.artifact_ids.contains(&record.id)
+                                    && observation_in_scope(observation)
+                                    && (requested_roles.is_empty()
+                                        || observation.target_revision_id.as_ref().is_some_and(
+                                            |target| {
+                                                occurrences.get(target).is_some_and(|uses| {
+                                                    uses.iter().any(|item| {
+                                                        roles_match(
+                                                            &requested_roles,
+                                                            &item.occurrence.roles,
+                                                        )
+                                                    })
+                                                })
+                                            },
+                                        ))
+                            })
+                            .and_then(|observation| observation.target_revision_id.clone())
+                    });
+                    (
+                        target.is_some(),
+                        target,
+                        artifact.uri.clone(),
+                        short(&artifact.note, 400),
+                        format!("{} {} {}", artifact.uri, artifact.note, artifact.digest),
+                    )
+                }
+                _ => continue,
+            };
+            if !eligible_record {
+                continue;
+            }
+            let associated_occurrences = associated_target
+                .as_deref()
+                .map(&target_roles)
+                .unwrap_or_default();
+            if !requested_roles.is_empty()
+                && !associated_occurrences
+                    .iter()
+                    .any(|item| roles_match(&requested_roles, &item.occurrence.roles))
+            {
+                continue;
+            }
+            let score = lex(&query_features, &search_text);
+            if !query_features.words.is_empty() && score == 0.0 {
+                continue;
+            }
+            records.push((record, title, snippet, score, associated_occurrences));
+        }
+    }
+    records.sort_by(|left, right| {
+        right
+            .3
+            .partial_cmp(&left.3)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(left.0.id.cmp(&right.0.id))
+    });
+    let records = records.into_iter().take(limit).enumerate().map(|(index, (record, title, snippet, score, occ))| json!({
+        "record_id":record.id,"kind":record.kind().as_str(),"title":title,"snippet":snippet,"lexical_rank":index+1,"score":score,
+        "occurrences":occ.iter().map(|item|json!({"root_revision_id":item.root_revision_id,"slot_path":item.occurrence.slot_path,"roles":item.occurrence.roles})).collect::<Vec<_>>()
+    })).collect::<Vec<_>>();
     Ok(json!({
         "mode": if matching > 0 { "lexical+vector" } else { "lexical" },
         "stage": s.as_str(),
         "selected_by": meta,
         "results": results,
+        "records": records,
         "related": related,
         "candidates": candidates,
         "vector_status": {
             "requested": q.vector.is_some(),
             "model": q.vector.as_ref().map(|vector| &vector.model),
             "dim": q.vector.as_ref().map(|vector| vector.dim),
-            "eligible_revisions": walk.revisions.len(),
+            "eligible_revisions": eligible.len(),
             "with_matching_embedding": matching,
+            "eligible_idea_revisions": eligible_ideas.len(),
+            "ideas_with_matching_embedding": matching_ideas,
             "used": matching > 0,
         },
-        "eligible_revisions": walk.revisions.len(),
-        "truncated": walk.truncated,
+        "eligible_revisions": eligible.len(),
+        "scope": match q.scope { SearchScope::Snapshot => "snapshot", SearchScope::ProjectHistory => "project_history" },
+        "truncated": truncated,
     }))
 }
 pub fn occurrences(ctx: &Context, p: &Params) -> ApiResult<Value> {
@@ -1170,6 +1765,16 @@ pub fn goals(ctx: &Context, p: &Params) -> ApiResult<Value> {
                     )
                     .is_ok_and(|target| target.id == assessment.target_revision_id);
                 if !valid {
+                    let current_target = graph::resolve_path(&v.ctx, &root, &assessment.slot_path)
+                        .ok()
+                        .map(|target| target.id.clone());
+                    let applicability = match current_target.as_deref() {
+                        None => "path_removed",
+                        Some(target) if target == assessment.target_revision_id => {
+                            "unchanged_target"
+                        }
+                        Some(_) => "target_changed",
+                    };
                     stale.push(json!({
                         "assessment_id": assessment_record.id,
                         "goal_id": gr.id,
@@ -1177,8 +1782,14 @@ pub fn goals(ctx: &Context, p: &Params) -> ApiResult<Value> {
                         "reason": if assessment.root_revision_id != root {
                             "root_not_in_snapshot"
                         } else {
-                            "target_changed"
+                            applicability
                         },
+                        "applicability": applicability,
+                        "original_root": assessment.root_revision_id,
+                        "current_root": root,
+                        "original_target_revision_id": assessment.target_revision_id,
+                        "current_target_revision_id": current_target,
+                        "requires_review": true,
                         "status": assessment.status,
                         "recorded_at": assessment_record.recorded_at,
                     }));
@@ -1439,6 +2050,562 @@ mod tests {
     }
 
     #[test]
+    fn hangul_search_normalizes_particles_and_spacing_without_one_fragment_hits() {
+        assert!(lex(&lexical_features("경보를"), "경보 처리") > 0.0);
+        assert!(lex(&lexical_features("경보"), "화재경보 라우팅") > 0.0);
+        assert!(lex(&lexical_features("경보"), "경보시스템 라우팅") > 0.0);
+        assert!(lex(&lexical_features("경보"), "경보 시스템") > 0.0);
+        assert!(lex(&lexical_features("관제 타임라인"), "관제타임라인 재구성") > 0.0);
+        assert_eq!(lex(&lexical_features("실시간 관제"), "실시간 보고서"), 0.0);
+    }
+
+    #[test]
+    fn role_aliases_are_contextual_and_data_is_not_infrastructure() {
+        let frontend = search(
+            &related_context(),
+            json!({"project_id":"proj_q","query":"프론트","roles":["FE"]}),
+        )
+        .unwrap();
+        assert_eq!(frontend["results"][0]["revision_id"], "rev_fe");
+        let backend = search(
+            &related_context(),
+            json!({"project_id":"proj_q","query":"정책","roles":["backend"]}),
+        )
+        .unwrap();
+        assert_eq!(backend["results"][0]["revision_id"], "rev_be");
+        let data = search(
+            &related_context(),
+            json!({"project_id":"proj_q","query":"정책","roles":["data"]}),
+        )
+        .unwrap();
+        assert!(data["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn candidate_only_search_does_not_require_a_head() {
+        let mut context = Context::default();
+        context
+            .records
+            .insert("project".into(), fixtures::project("project", 1));
+        context.records.insert(
+            "candidate".into(),
+            fixtures::record(
+                "candidate",
+                2,
+                RecordKind::Candidate,
+                json!({
+                    "project_id":"project","proposed_kind":"idea","title":"경보 후보",
+                    "body":"관제 경보","origin":"human","claim_mode":"inferred","status":"pending"
+                }),
+            ),
+        );
+        context.seq = 2;
+        let found = search(
+            &context,
+            json!({"project_id":"project","query":"경보를","lanes":["candidate"]}),
+        )
+        .unwrap();
+        assert_eq!(found["candidates"][0]["candidate_id"], "candidate");
+        assert!(found["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn history_includes_local_orphans_but_not_cross_project_or_roleless_orphans() {
+        let mut context = related_context();
+        context.records.insert(
+            "ent_orphan".into(),
+            fixtures::entity("ent_orphan", 11, "idea", "proj_q"),
+        );
+        context.records.insert(
+            "rev_orphan".into(),
+            fixtures::revision("rev_orphan", 12, "ent_orphan", "고립 경보", json!([])),
+        );
+        context
+            .records
+            .insert("other".into(), fixtures::project("other", 13));
+        context.records.insert(
+            "ent_cross".into(),
+            fixtures::entity("ent_cross", 14, "idea", "other"),
+        );
+        context.records.insert(
+            "rev_cross".into(),
+            fixtures::revision("rev_cross", 15, "ent_cross", "고립 경보", json!([])),
+        );
+        context.seq = 15;
+        let found = search(
+            &context,
+            json!({"project_id":"proj_q","query":"고립 경보","scope":"project_history"}),
+        )
+        .unwrap();
+        let ids = found["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["revision_id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"rev_orphan"));
+        assert!(!ids.contains(&"rev_cross"));
+        let role_filtered = search(
+            &context,
+            json!({"project_id":"proj_q","query":"고립 경보","scope":"project_history","roles":["be"]}),
+        )
+        .unwrap();
+        assert!(role_filtered["results"].as_array().unwrap().is_empty());
+        let past = search(
+            &context,
+            json!({"project_id":"proj_q","query":"고립 경보","scope":"project_history","known_seq":11}),
+        )
+        .unwrap();
+        assert!(past["results"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn official_history_contains_only_publication_roots_at_the_effective_cutoff() {
+        let mut context = related_context();
+        context.records.insert(
+            "ent_future".into(),
+            fixtures::entity("ent_future", 11, "idea", "proj_q"),
+        );
+        context.records.insert(
+            "rev_future".into(),
+            fixtures::revision("rev_future", 12, "ent_future", "미래 경보", json!([])),
+        );
+        context.records.insert(
+            "rev_schema_future".into(),
+            fixtures::revision(
+                "rev_schema_future",
+                13,
+                "ent_schema",
+                "미래 스키마",
+                json!([
+                    {"slot_id":"future","revision_id":"rev_future","roles":["be"]}
+                ]),
+            ),
+        );
+        context.records.insert(
+            "rev_root_future".into(),
+            fixtures::revision(
+                "rev_root_future",
+                14,
+                "proj_q",
+                "미래 루트",
+                json!([
+                    {"slot_id":"schema","revision_id":"rev_schema_future","roles":[]}
+                ]),
+            ),
+        );
+        for (id, seq, root, published_at) in [
+            ("publication_old", 15, "rev_root", "2026-08-01T00:00:00Z"),
+            (
+                "publication_future",
+                16,
+                "rev_root_future",
+                "2026-09-01T00:00:00Z",
+            ),
+        ] {
+            context.records.insert(
+                id.into(),
+                fixtures::record(
+                    id,
+                    seq,
+                    RecordKind::Publication,
+                    json!({
+                        "project_id":"proj_q","root_revision_id":root,"label":"release",
+                        "published_at":published_at,"actor":"human:test"
+                    }),
+                ),
+            );
+        }
+        context.seq = 16;
+        let before = search(&context, json!({
+            "project_id":"proj_q","stage":"official","scope":"project_history","query":"미래 경보",
+            "effective_at":"2026-08-31T23:59:59Z"
+        })).unwrap();
+        assert!(before["results"].as_array().unwrap().is_empty());
+        let after = search(&context, json!({
+            "project_id":"proj_q","stage":"official","scope":"project_history","query":"미래 경보",
+            "effective_at":"2026-09-01T00:00:00Z"
+        })).unwrap();
+        assert_eq!(after["results"][0]["revision_id"], "rev_future");
+    }
+
+    #[test]
+    fn default_search_walk_is_not_truncated_at_five_hundred_nodes() {
+        let mut context = related_context();
+        let mut slots = Vec::new();
+        for index in 0..520 {
+            let entity_id = format!("wide_entity_{index}");
+            let revision_id = format!("wide_revision_{index}");
+            context.records.insert(
+                entity_id.clone(),
+                fixtures::entity(&entity_id, 20 + index as i64 * 2, "idea", "proj_q"),
+            );
+            let body = if index == 519 {
+                "마지막 탐색표식"
+            } else {
+                "일반 항목"
+            };
+            context.records.insert(
+                revision_id.clone(),
+                fixtures::revision(
+                    &revision_id,
+                    21 + index as i64 * 2,
+                    &entity_id,
+                    body,
+                    json!([]),
+                ),
+            );
+            slots.push(
+                json!({"slot_id":format!("slot_{index}"),"revision_id":revision_id,"roles":["be"]}),
+            );
+        }
+        context.records.insert(
+            "rev_schema".into(),
+            fixtures::revision(
+                "rev_schema",
+                7,
+                "ent_schema",
+                "넓은 스키마",
+                Value::Array(slots),
+            ),
+        );
+        context.seq = 1100;
+        let found = search(
+            &context,
+            json!({"project_id":"proj_q","query":"마지막 탐색표식"}),
+        )
+        .unwrap();
+        assert_eq!(found["results"][0]["revision_id"], "wide_revision_519");
+        assert_eq!(found["truncated"], false);
+        assert!(found["eligible_revisions"].as_u64().unwrap() > 500);
+    }
+
+    #[test]
+    fn embeddings_are_selected_by_revision_model_dim_and_latest_sequence() {
+        let mut context = related_context();
+        context.records.insert(
+            "embedding_a_old".into(),
+            fixtures::record(
+                "embedding_a_old",
+                11,
+                RecordKind::Embedding,
+                json!({"revision_id":"rev_fe","model":"a","dim":2,"values":[1.0,0.0]}),
+            ),
+        );
+        context.records.insert(
+            "embedding_b".into(),
+            fixtures::record(
+                "embedding_b",
+                12,
+                RecordKind::Embedding,
+                json!({"revision_id":"rev_fe","model":"b","dim":2,"values":[1.0,0.0]}),
+            ),
+        );
+        context.records.insert(
+            "embedding_a_new".into(),
+            fixtures::record(
+                "embedding_a_new",
+                13,
+                RecordKind::Embedding,
+                json!({"revision_id":"rev_fe","model":"a","dim":2,"values":[0.0,1.0]}),
+            ),
+        );
+        context.records.insert(
+            "embedding_be".into(),
+            fixtures::record(
+                "embedding_be",
+                14,
+                RecordKind::Embedding,
+                json!({"revision_id":"rev_be","model":"a","dim":2,"values":[1.0,0.0]}),
+            ),
+        );
+        context.seq = 14;
+        let found = search(
+            &context,
+            json!({
+                "project_id":"proj_q","query":"","limit":1,
+                "vector":{"model":"a","dim":2,"values":[0.0,1.0]}
+            }),
+        )
+        .unwrap();
+        assert_eq!(found["results"][0]["revision_id"], "rev_fe");
+        assert_eq!(found["vector_status"]["with_matching_embedding"], 2);
+        assert_eq!(found["vector_status"]["eligible_idea_revisions"], 2);
+        assert_eq!(found["vector_status"]["ideas_with_matching_embedding"], 2);
+
+        let role_scoped = search(
+            &context,
+            json!({
+                "project_id":"proj_q","query":"","roles":["frontend"],
+                "vector":{"model":"a","dim":2,"values":[0.0,1.0]}
+            }),
+        )
+        .unwrap();
+        assert_eq!(role_scoped["vector_status"]["eligible_idea_revisions"], 1);
+        assert_eq!(
+            role_scoped["vector_status"]["ideas_with_matching_embedding"],
+            1
+        );
+    }
+
+    #[test]
+    fn nonrevision_results_obey_effective_time_and_occurrence_roles() {
+        let mut context = related_context();
+        context.records.insert(
+            "observation".into(),
+            fixtures::record(
+                "observation",
+                11,
+                RecordKind::Observation,
+                json!({
+                    "project_id":"proj_q","target_revision_id":"rev_be","metric":"경보 처리",
+                    "value":true,"status":"observed","occurred_at":"2026-08-02T09:00:00+09:00",
+                    "method":"실행","actor":"human:test","note":"경보 관측 결과"
+                }),
+            ),
+        );
+        context.seq = 11;
+        let found = search(
+            &context,
+            json!({
+                "project_id":"proj_q","query":"경보를","kinds":["observation"],"roles":["backend"],
+                "effective_at":"2026-08-02T00:00:00Z"
+            }),
+        )
+        .unwrap();
+        assert_eq!(found["records"][0]["record_id"], "observation");
+        let wrong_role = search(
+            &context,
+            json!({
+                "project_id":"proj_q","query":"경보","kinds":["observation"],"roles":["frontend"]
+            }),
+        )
+        .unwrap();
+        assert!(wrong_role["records"].as_array().unwrap().is_empty());
+        let before = search(
+            &context,
+            json!({
+                "project_id":"proj_q","query":"경보","kinds":["observation"],
+                "effective_at":"2026-08-01T23:59:59.999Z"
+            }),
+        )
+        .unwrap();
+        assert!(before["records"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn all_supported_nonrevision_kinds_are_project_and_role_scoped() {
+        let mut context = related_context();
+        for (id, seq, kind, data) in [
+            (
+                "artifact_search",
+                11,
+                RecordKind::Artifact,
+                json!({"uri":"file:///tmp/result.json","digest":"abcd","note":"경보 결과 파일"}),
+            ),
+            (
+                "capture_search",
+                12,
+                RecordKind::Capture,
+                json!({"project_id":"proj_q","content":"경보 원문","source_kind":"note","occurred_at":"2026-08-01T00:00:00Z"}),
+            ),
+            (
+                "observation_search",
+                13,
+                RecordKind::Observation,
+                json!({
+                    "project_id":"proj_q","target_revision_id":"rev_be","metric":"경보 처리","value":42.5,"unit":"ms",
+                    "status":"observed","occurred_at":"2026-08-02T00:00:00Z","method":"synthetic-run","actor":"human:test",
+                    "environment":{"runtime":"cuda"},
+                    "artifact_ids":["artifact_search"],"capture_id":"capture_search","note":"경보 관측"
+                }),
+            ),
+            (
+                "goal_search",
+                14,
+                RecordKind::Goal,
+                json!({
+                    "project_id":"proj_q","scope":{"root_revision_id":"rev_root","slot_path":["schema","be"],"target_revision_id":"rev_be"},
+                    "statement":"경보 처리 목표","criteria":[{"criterion_id":"ok","kind":"qualitative","statement":"통과","required":true}],
+                    "origin":"official","actor":"human:test"
+                }),
+            ),
+            (
+                "baseline_search",
+                15,
+                RecordKind::Baseline,
+                json!({"goal_id":"goal_search","criterion_ids":["ok"],"effective_from":"2026-08-01T00:00:00Z","actor":"human:test","reason":"adopt"}),
+            ),
+            (
+                "assessment_search",
+                16,
+                RecordKind::Assessment,
+                json!({
+                    "root_revision_id":"rev_root","slot_path":["schema","be"],"target_revision_id":"rev_be","baseline_id":"baseline_search",
+                    "evidence_cutoff_seq":13,"evidence_cutoff_at":"2026-08-02T00:00:00Z","evaluator":"경보 평가자","rubric_version":"v1",
+                    "origin":"official","status":"met","criteria_results":[{"criterion_id":"ok","status":"met"}],"evidence_observation_ids":["observation_search"]
+                }),
+            ),
+        ] {
+            context
+                .records
+                .insert(id.into(), fixtures::record(id, seq, kind, data));
+        }
+        context.seq = 16;
+        let found = search(
+            &context,
+            json!({
+                "project_id":"proj_q","query":"","roles":["BE"],
+                "kinds":["capture","observation","goal","assessment","artifact"]
+            }),
+        )
+        .unwrap();
+        let kinds = found["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["kind"].as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            kinds,
+            BTreeSet::from(["capture", "observation", "goal", "assessment", "artifact"])
+        );
+        assert!(found["results"].as_array().unwrap().is_empty());
+        for query in ["42.5", "observed", "cuda", "synthetic-run"] {
+            let typed = search(
+                &context,
+                json!({
+                    "project_id":"proj_q","query":query,"roles":["BE"],"kinds":["observation"]
+                }),
+            )
+            .unwrap();
+            assert_eq!(
+                typed["records"][0]["record_id"], "observation_search",
+                "query={query}"
+            );
+        }
+    }
+
+    #[test]
+    fn positive_similarity_expands_only_from_a_direct_hit() {
+        let mut context = related_context();
+        context.records.insert(
+            "similar".into(),
+            fixtures::record(
+                "similar",
+                11,
+                RecordKind::Link,
+                json!({
+                    "link_type":"similar","from_id":"rev_fe","to_id":"rev_be","note":"",
+                    "actor":"human:test","similarity":{"score":0.87,"method":"test"}
+                }),
+            ),
+        );
+        context.seq = 11;
+        let found = search(&context, json!({"project_id":"proj_q","query":"프론트"})).unwrap();
+        assert!(found["related"].as_array().unwrap().iter().any(|row| {
+            row["revision_id"] == "rev_be"
+                && row["reason"] == "similarity"
+                && row["similarity_score"] == json!(0.87)
+        }));
+        let absent = search(&context, json!({"project_id":"proj_q","query":"없는 질의"})).unwrap();
+        assert!(absent["related"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn similarity_keeps_same_role_neighbors_and_deduplicates_by_returned_id() {
+        let mut context = related_context();
+        context.records.insert(
+            "ent_peer".into(),
+            fixtures::entity("ent_peer", 11, "idea", "proj_q"),
+        );
+        context.records.insert(
+            "rev_peer".into(),
+            fixtures::revision("rev_peer", 12, "ent_peer", "백엔드 이웃", json!([])),
+        );
+        context.records.insert(
+            "rev_schema".into(),
+            fixtures::revision(
+                "rev_schema",
+                7,
+                "ent_schema",
+                "스키마",
+                json!([
+                    {"slot_id":"be","revision_id":"rev_be","roles":["be"]},
+                    {"slot_id":"peer","revision_id":"rev_peer","roles":["backend"]},
+                    {"slot_id":"fe","revision_id":"rev_fe","roles":["fe"]}
+                ]),
+            ),
+        );
+        for (id, seq, score) in [("similar_one", 13, 0.8), ("similar_two", 14, 0.7)] {
+            context.records.insert(id.into(), fixtures::record(id, seq, RecordKind::Link, json!({
+                "link_type":"similar","from_id":"rev_be","to_id":"rev_peer","actor":"human:test",
+                "similarity":{"score":score,"method":"test"}
+            })));
+        }
+        context.seq = 14;
+        let found = search(
+            &context,
+            json!({"project_id":"proj_q","query":"정책","roles":["BE"]}),
+        )
+        .unwrap();
+        let peer = found["related"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["revision_id"] == "rev_peer")
+            .collect::<Vec<_>>();
+        assert_eq!(peer.len(), 1);
+        assert_eq!(peer[0]["reason"], "similarity");
+    }
+
+    #[test]
+    fn negative_similarity_and_contradiction_are_counterevidence_not_positive_similarity() {
+        let mut context = related_context();
+        context.records.insert(
+            "negative_similarity".into(),
+            fixtures::record(
+                "negative_similarity",
+                11,
+                RecordKind::Link,
+                json!({
+                    "link_type":"similar","from_id":"rev_fe","to_id":"rev_be","actor":"human:test",
+                    "similarity":{"score":-0.4,"method":"test"}
+                }),
+            ),
+        );
+        context.records.insert(
+            "counter_observation".into(),
+            fixtures::record("counter_observation", 12, RecordKind::Observation, json!({
+                "project_id":"proj_q","target_revision_id":"rev_fe","metric":"반증","value":false,
+                "status":"negative","occurred_at":"2026-08-01T00:00:00Z","method":"test","actor":"human:test"
+            })),
+        );
+        context.records.insert(
+            "contradiction".into(),
+            fixtures::record("contradiction", 13, RecordKind::Link, json!({
+                "link_type":"contradict","from_id":"counter_observation","to_id":"rev_fe","actor":"human:test"
+            })),
+        );
+        context.seq = 13;
+        let found = search(&context, json!({"project_id":"proj_q","query":"프론트"})).unwrap();
+        assert!(found["related"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["revision_id"] == "rev_be"
+                && row["reason"] == "dissimilarity"
+                && row["counterevidence"] == true));
+        assert!(found["related"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["record_id"] == "counter_observation"
+                && row["reason"] == "contradiction"
+                && row["counterevidence"] == true));
+    }
+
+    #[test]
     fn candidate_lane_filters_to_project_and_query() {
         let mut context = related_context();
         context.records.insert(
@@ -1614,6 +2781,95 @@ mod tests {
         let found = goals(&context, &february).unwrap();
         assert_eq!(found["goals"][0]["gate_status"], "met");
         assert_eq!(found["goals"][0]["baselines"].as_array().unwrap().len(), 2);
+    }
+
+    fn stale_goal_context(new_schema_slots: Value) -> Context {
+        let mut context = related_context();
+        context.records.insert(
+            "goal_stale".into(),
+            fixtures::record("goal_stale", 11, RecordKind::Goal, json!({
+                "project_id":"proj_q","scope":{"root_revision_id":"rev_root","slot_path":["schema","be"],"target_revision_id":"rev_be"},
+                "statement":"정책 목표","criteria":[{"criterion_id":"ok","kind":"qualitative","statement":"통과","required":true}],
+                "origin":"official","actor":"human:test"
+            })),
+        );
+        context.records.insert(
+            "baseline_stale".into(),
+            fixtures::record("baseline_stale", 12, RecordKind::Baseline, json!({
+                "goal_id":"goal_stale","criterion_ids":["ok"],"effective_from":"2026-01-01T00:00:00Z","actor":"human:test","reason":"adopt"
+            })),
+        );
+        context.records.insert(
+            "assessment_stale".into(),
+            fixtures::record("assessment_stale", 13, RecordKind::Assessment, json!({
+                "root_revision_id":"rev_root","slot_path":["schema","be"],"target_revision_id":"rev_be","baseline_id":"baseline_stale",
+                "evidence_cutoff_seq":10,"evidence_cutoff_at":"2026-01-01T00:00:00Z","evaluator":"human:test","rubric_version":"v1",
+                "origin":"official","status":"met","criteria_results":[{"criterion_id":"ok","status":"met"}]
+            })),
+        );
+        context.records.insert(
+            "rev_schema_new".into(),
+            fixtures::revision(
+                "rev_schema_new",
+                14,
+                "ent_schema",
+                "새 스키마",
+                new_schema_slots,
+            ),
+        );
+        context.records.insert(
+            "rev_root_new".into(),
+            fixtures::revision(
+                "rev_root_new",
+                15,
+                "proj_q",
+                "새 루트",
+                json!([
+                    {"slot_id":"schema","revision_id":"rev_schema_new","roles":[]}
+                ]),
+            ),
+        );
+        context.records.insert(
+            "hc_new".into(),
+            fixtures::record("hc_new", 16, RecordKind::HeadChange, json!({
+                "project_id":"proj_q","stage":"working","before_revision_id":"rev_root","after_revision_id":"rev_root_new",
+                "reason":"change","actor":"human:test","meaningful":true,"decision":{"before":"old","after":"new","rationale":"test"}
+            })),
+        );
+        context.seq = 16;
+        context
+    }
+
+    #[test]
+    fn stale_assessment_reports_current_path_applicability_without_granting_gate() {
+        for (slots, expected, current_target) in [
+            (
+                json!([{"slot_id":"be","revision_id":"rev_be","roles":["be"]}]),
+                "unchanged_target",
+                Some("rev_be"),
+            ),
+            (
+                json!([{"slot_id":"be","revision_id":"rev_fe","roles":["be"]}]),
+                "target_changed",
+                Some("rev_fe"),
+            ),
+            (json!([]), "path_removed", None),
+        ] {
+            let context = stale_goal_context(slots);
+            let found = goals(
+                &context,
+                &Params::from([("project_id".into(), "proj_q".into())]),
+            )
+            .unwrap();
+            let stale = &found["stale_assessments"][0];
+            assert_eq!(stale["applicability"], expected);
+            assert_eq!(stale["original_root"], "rev_root");
+            assert_eq!(stale["current_root"], "rev_root_new");
+            assert_eq!(stale["current_target_revision_id"], json!(current_target));
+            assert_eq!(stale["requires_review"], true);
+            assert_eq!(found["goals"][0]["gate_status"], "unknown");
+            assert!(found["goals"][0]["baselines"][0]["official_assessment"].is_null());
+        }
     }
     #[test]
     fn assessments_cannot_leak_future_evidence_into_an_earlier_effective_view() {

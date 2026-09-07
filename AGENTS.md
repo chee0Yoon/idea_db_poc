@@ -9,6 +9,9 @@ Read `plan.md`, `docs/api.md` and the affected code before edits. Main owns orch
 - Recursive acyclic version-pinned composition, occurrence slot paths, isolated path edits.
 - Atomic domain commit with expected-head conflict and digest-aware idempotency.
 - Original captures survive failed downstream proposals.
+- Local AI owns atomization; all domain mutations enter through the official stdio MCP server. The dashboard is read-only.
+- New Idea uploads pass local embedding and staged review before atomic apply; similarity never implies automatic merge.
+- Preserve successful and failed reports, stdout/stderr, Neo4j logs, and existing user data when updating containers.
 - Scope assessment by exact root/path/baseline/evidence cutoff. AI proposals are visibly separate.
 - Historical eligibility excludes future records. No mutating historical sources.
 - Parameterized queries, bounded inputs/traversals, no client-supplied Cypher.
@@ -20,7 +23,7 @@ State owned files, required inputs, expected outputs and checks before delegatio
 
 ## Validation
 
-`make check` must run formatting, Rust lint and domain tests. `make acceptance` must exercise the running API against real Neo4j. `make docker-check` must build/start the standalone image and prove persistence and restore. Exact commands and prerequisites are in README. Failed critical checks block release. Record measured outcomes and remaining limitations in `docs/validation.md`; never mark an unrun test passed.
+`make check` must run formatting, Rust lint and domain tests. `make acceptance` must exercise MCP mutations and read-only HTTP against real Neo4j. `make docker-check` must build/start the standalone image and prove persistence and restore. Exact commands and prerequisites are in README. Failed critical checks block release. Record measured outcomes and remaining limitations in `docs/validation.md`; never mark an unrun test passed.
 
 ## Definition of done
 

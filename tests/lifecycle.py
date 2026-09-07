@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Thirty-step black-box lifecycle validation for a running idea_db API.
 
-This suite writes only globally unique IDs.  It never clears the database.  A
-normal run executes deterministic local workloads, records their real artifacts
-and observations, then writes a report that can be replayed read-only after a
-restart or an export/import restore.
+This suite writes only globally unique IDs through the stdio MCP client.  It
+never clears the database.  A normal run executes deterministic local workloads,
+records their real artifacts and observations, then writes a report that can be
+replayed read-only after a restart or an export/import restore.
 """
 
 from __future__ import annotations

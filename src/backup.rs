@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use crate::error::{ApiError, ApiResult, Issue};
 use crate::limits;
 use crate::model::{NewRecord, RecordData, RecordKind, Stage, StoredRecord};
-use crate::neo4j::Neo4j;
+use crate::neo4j::{stmt, Neo4j};
 use crate::store;
 use crate::util;
 use crate::validate::{self, Context, HeadState, Package};
@@ -308,7 +308,17 @@ pub async fn import(neo: &Neo4j, body: Value) -> ApiResult<Value> {
         // Write and check inside the transaction. Verifying after commit could
         // only report a half-restored graph, never undo one.
         let results = tx.run(&statements).await?;
-        store::verify_relationship_counts(&records, &results)
+        store::verify_relationship_counts(&records, &results)?;
+        // Prepared uploads describe the pre-restore domain. Preserve their
+        // audit history, but make every old packet unusable in the same atomic
+        // transaction that installs the restored records.
+        tx.run_one(stmt(
+            "MATCH (s:IdeaDbUpload) WHERE s.invalidated_at IS NULL \
+             SET s.invalidated_at = $invalidated_at RETURN count(s) AS invalidated",
+            json!({"invalidated_at": util::now_utc_millis()}),
+        ))
+        .await?;
+        Ok(())
     }
     .await;
     match outcome {

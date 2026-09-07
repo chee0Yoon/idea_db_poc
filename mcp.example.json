@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "idea_db": {
+      "command": "/absolute/path/to/idea_db_neo4j/scripts/idea-db-mcp",
+      "args": []
+    }
+  }
+}

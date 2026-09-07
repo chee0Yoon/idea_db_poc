@@ -1,0 +1,5 @@
+#!/bin/sh
+# stdio launcher for local subscribed AI clients; stdout belongs to MCP only.
+set -eu
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec docker compose --project-directory "$repo_dir" -f "$repo_dir/compose.yaml" exec -T idea-db idea-db-mcp

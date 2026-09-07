@@ -10,12 +10,13 @@
   <body>
     <a class="skip-link" href="#main-content">본문으로 건너뛰기</a>
     <header class="topbar">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">i</span><span>idea_db</span><small>workbench</small></div>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">i</span><span>idea_db</span><small>workbench</small><span class="read-only-badge">읽기 전용 · 입력은 MCP</span></div>
       <div class="scope-controls" aria-label="조회 범위">
         <label>프로젝트<select id="project-select" aria-label="프로젝트"><option value="">프로젝트를 불러오는 중…</option></select></label>
         <label>스냅샷<select id="stream-select" aria-label="스냅샷"><option value="working">작업 head</option><option value="official">공식 publication</option></select></label>
-        <label>지식 기준 시점<input id="known-at" type="datetime-local" aria-label="지식 기준 시점"></label>
-        <label>유효 시점<input id="effective-at" type="datetime-local" aria-label="유효 시점"></label>
+        <label>서버 기록 기준 시점<input id="known-at" type="datetime-local" step="0.001" aria-label="서버 기록 기준 시점"></label>
+        <label>근거 유효 시점<input id="effective-at" type="datetime-local" step="0.001" aria-label="근거 유효 시점"></label>
+        <label>탐색 한도<select id="max-nodes" aria-label="탐색 한도"><option value="500">500</option><option value="1000">1,000</option><option value="5000" selected>5,000</option></select></label>
       </div>
       <div class="top-actions">
         <button class="button quiet" id="token-button" type="button">접속 토큰</button>
@@ -25,22 +26,20 @@
 
     <main id="main-content" class="workspace">
       <aside class="pane navigator" aria-label="구성 탐색">
-        <div class="pane-title"><div><p class="eyebrow">구성</p><h1>탐색기</h1></div><button class="icon-button" id="new-project-button" type="button" aria-label="프로젝트 만들기">＋</button></div>
-        <p class="muted compact" id="tree-summary">프로젝트를 선택하면 고정된 revision 구성과 사용 위치를 표시합니다.</p>
+        <div class="pane-title"><div><p class="eyebrow">구성</p><h1>탐색기</h1></div></div>
+        <p class="muted compact" id="tree-summary">서버 기록 시점은 기록된 시각이고, 근거 유효 시점은 관측이 실제 발생한 시각입니다. 입력값은 이 브라우저 시간대로 해석되어 UTC로 전송됩니다.</p>
         <nav id="tree" class="tree" aria-label="프로젝트 구성"></nav>
-        <div class="navigator-footer"><button class="button secondary wide" id="capture-button" type="button">원문 캡처</button></div>
       </aside>
 
       <section class="pane record-pane" aria-label="선택한 기록">
         <div id="record-empty" class="empty-state">
           <p class="eyebrow">시작하기</p><h2>프로젝트의 원문과 구성을 보존하세요.</h2>
-          <p>먼저 프로젝트를 만들고 원문을 캡처한 뒤, 검증한 패키지를 적용합니다. 실패한 패키지도 원문은 그대로 남습니다.</p>
-          <div class="button-row"><button class="button" id="empty-project-button" type="button">프로젝트 만들기</button><button class="button secondary" id="empty-capture-button" type="button">원문 캡처</button></div>
+          <p>이 대시보드는 읽기 전용입니다. 프로젝트 생성, 원문 업로드, 원자화와 패키지 적용은 로컬 AI MCP에서 실행하세요. export 파일은 자동으로 불러오지 않습니다.</p>
         </div>
         <article id="record-detail" hidden>
           <div class="record-heading">
             <div><p class="eyebrow" id="record-kind">REVISION</p><h2 id="record-title">—</h2><p class="muted" id="record-meta">—</p></div>
-            <div class="record-actions"><button class="button secondary" id="child-button" type="button">하위 항목 추가</button><button class="button secondary" id="replace-button" type="button">선택 위치 교체</button><button class="button secondary" id="export-button" type="button">내보내기</button></div>
+            <div class="record-actions"><button class="button secondary" id="export-button" type="button">내보내기</button></div>
           </div>
           <div id="record-badges" class="badge-row" aria-label="기록 상태"></div>
           <section class="content-section"><h3>내용</h3><div id="record-content" class="prose"></div></section>
@@ -57,22 +56,17 @@
       <aside class="pane insights" aria-label="검색과 평가">
         <section class="panel query-panel"><div class="pane-title small"><div><p class="eyebrow">검색</p><h2>사용 위치와 문맥</h2></div></div>
           <form id="search-form"><label class="visually-hidden" for="search-query">검색어</label><div class="search-line"><input id="search-query" name="q" placeholder="본문, 태그, 근거 검색" autocomplete="off"><button class="icon-button" aria-label="검색">⌕</button></div>
-          <label>역할 <input id="role-query" name="role" placeholder="예: FE, Research"></label><label class="check-row"><input id="related-context" type="checkbox" name="related"> 관련 문맥도 표시</label></form>
+          <label>검색 범위 <select id="search-scope"><option value="snapshot">선택한 스냅샷</option><option value="project_history">프로젝트 이력 전체</option></select></label><label>역할 <input id="role-query" name="role" placeholder="예: FE, Research"></label><fieldset class="kind-picker"><legend>기록 종류</legend><label><input type="checkbox" name="search-kind" value="revision" checked> revision</label><label><input type="checkbox" name="search-kind" value="capture" checked> capture</label><label><input type="checkbox" name="search-kind" value="observation" checked> observation</label><label><input type="checkbox" name="search-kind" value="goal" checked> goal</label><label><input type="checkbox" name="search-kind" value="assessment" checked> assessment</label><label><input type="checkbox" name="search-kind" value="artifact" checked> artifact</label></fieldset><label class="check-row"><input id="related-context" type="checkbox" name="related"> 관련 문맥도 표시</label></form>
           <div id="search-state" class="muted compact">직접 역할 일치와 관련 문맥을 구분해 표시합니다.</div><div id="search-results" class="result-list"></div>
         </section>
-        <section class="panel"><div class="pane-title small"><div><p class="eyebrow">목표</p><h2>기준별 상태</h2></div><button class="icon-button" id="goal-button" type="button" aria-label="목표 추가">＋</button></div><div id="goal-state" class="goal-state"></div></section>
-        <section class="panel timeline-panel"><div class="pane-title small"><div><p class="eyebrow">이력</p><h2>방향과 기록</h2></div></div><ol id="timeline" class="timeline"></ol></section>
+        <section class="panel"><div class="pane-title small"><div><p class="eyebrow">목표</p><h2>기준별 상태</h2></div></div><div id="goal-state" class="goal-state"></div></section>
+        <section class="panel timeline-panel"><div class="pane-title small"><div><p class="eyebrow">이력</p><h2>방향과 기록</h2></div></div><p class="muted compact">항목을 누르면 해당 root와 서버 기록 seq로 스냅샷을 엽니다.</p><ol id="timeline" class="timeline"></ol></section>
       </aside>
     </main>
 
     <div id="status-region" class="status-region" role="status" aria-live="polite"></div>
 
     <dialog id="token-dialog"><form method="dialog" class="dialog-card"><div class="dialog-title"><h2>접속 토큰</h2><button class="icon-button" value="cancel" aria-label="닫기">×</button></div><p class="muted">이 브라우저 탭의 sessionStorage에만 보관하고 서버에는 저장하지 않습니다.</p><label>Bearer token <input id="token-input" type="password" autocomplete="off" spellcheck="false"></label><div class="dialog-actions"><button class="button secondary" id="token-clear" type="button">지우기</button><button class="button" id="token-save" value="default">저장</button></div></form></dialog>
-    <dialog id="project-dialog"><form id="project-form" class="dialog-card"><div class="dialog-title"><h2>프로젝트 만들기</h2><button class="icon-button" type="button" data-close-dialog aria-label="닫기">×</button></div><label>프로젝트 ID <input name="id" required maxlength="128" pattern="[a-z][a-z0-9_.:-]{2,127}" placeholder="proj_login" autofocus></label><label>이름 <input name="title" required maxlength="200"></label><label>설명 <textarea name="description" rows="3" maxlength="4000"></textarea></label><label>작성자 <input name="actor" required maxlength="200" value="human:local"></label><div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog>취소</button><button class="button" type="submit">검증 후 만들기</button></div></form></dialog>
-    <dialog id="capture-dialog"><form id="capture-form" class="dialog-card"><div class="dialog-title"><h2>원문 캡처</h2><button class="icon-button" type="button" data-close-dialog aria-label="닫기">×</button></div><label>원문 <textarea name="content" rows="10" required placeholder="아이디어, 회의 메모, 관측값을 원문 그대로 입력합니다."></textarea></label><label>출처 종류 <select name="source_kind"><option value="paste">붙여넣기</option><option value="note">메모</option><option value="file">파일</option><option value="url">URL</option><option value="tool">도구</option></select></label><label>출처 참조 <input name="source_ref" maxlength="4000" placeholder="선택 사항"></label><label>실제 발생 시각 <input name="occurred_at" type="datetime-local"></label><div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog>취소</button><button class="button" type="submit">캡처 저장</button></div></form></dialog>
-    <dialog id="package-dialog"><form id="package-form" class="dialog-card large"><div class="dialog-title"><h2>패키지 검토 및 적용</h2><button class="icon-button" type="button" data-close-dialog aria-label="닫기">×</button></div><p class="muted">먼저 서버 검증을 실행합니다. 제안과 공식 기록은 별도로 표시됩니다.</p><label>버전형 패키지 JSON <textarea id="package-json" name="package" rows="16" required spellcheck="false" placeholder='{"protocol_version":1,"idempotency_key":"…","expected_heads":[]}'></textarea></label><div id="package-result" class="validation-result" hidden></div><div class="dialog-actions"><button class="button secondary" id="package-validate" type="button">검증 및 diff</button><button class="button" id="package-apply" type="submit" disabled>적용</button></div></form></dialog>
-    <dialog id="replace-dialog"><form id="replace-form" class="dialog-card"><div class="dialog-title"><h2>선택 위치 교체</h2><button class="icon-button" type="button" data-close-dialog aria-label="닫기">×</button></div><p id="replace-context" class="muted">선택된 occurrence가 없습니다.</p><label>기존 revision ID <input name="target_revision_id" required maxlength="128" spellcheck="false"></label><label>멱등 키 <input name="idempotency_key" required maxlength="200" placeholder="occ-2026-09-07-001"></label><label>작성자 <input name="actor" required maxlength="200" value="human:local"></label><label>변경 이유 <textarea name="reason" rows="2" required maxlength="500"></textarea></label><label>루트 변경 이유 <textarea name="root_change_reason" rows="2" required maxlength="500"></textarea></label><label>변경 전 <input name="decision_before" required maxlength="1000"></label><label>변경 후 <input name="decision_after" required maxlength="1000"></label><label>근거 <textarea name="decision_rationale" rows="2" required maxlength="1000"></textarea></label><div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog>취소</button><button class="button" type="submit">교체 적용</button></div></form></dialog>
-    <dialog id="child-dialog"><form id="child-form" class="dialog-card"><div class="dialog-title"><h2>하위 항목 추가</h2><button class="icon-button" type="button" data-close-dialog aria-label="닫기">×</button></div><p id="child-context" class="muted">선택한 구성 위치 아래에 새 불변 revision을 추가합니다.</p><label>종류 <select name="entity_kind" id="child-kind" required></select></label><label>슬롯 ID <input name="slot_id" required maxlength="64" pattern="[a-z0-9][a-z0-9_-]{0,63}" value="child"></label><label>제목 <input name="title" required maxlength="200"></label><label>본문 <textarea name="body" rows="5" required maxlength="65536"></textarea></label><label>출처 방식 <select name="claim_mode"><option value="inferred">추론·정리</option><option value="extracted">원문 그대로 인용</option></select></label><label>캡처 ID (원문 인용 시 필수) <input name="capture_id" maxlength="128" placeholder="cap_…"></label><div class="form-grid"><label>원문 시작 위치 <input name="anchor_start" type="number" min="0" step="1"></label><label>원문 끝 위치 <input name="anchor_end" type="number" min="1" step="1"></label></div><p class="muted compact">원문 인용은 본문이 해당 캡처의 지정 구간과 정확히 같아야 합니다.</p><label>사용 위치 역할 <input name="roles" maxlength="256" placeholder="예: be, research (쉼표로 구분)"></label><label>작성자 <input name="actor" required maxlength="200" value="human:local"></label><label>변경 이유 <input name="reason" required maxlength="500" value="하위 구성 추가"></label><label>변경 전 <input name="decision_before" required maxlength="1000"></label><label>변경 후 <input name="decision_after" required maxlength="1000"></label><label>근거 <textarea name="decision_rationale" rows="2" required maxlength="1000"></textarea></label><div class="dialog-actions"><button class="button secondary" type="button" data-close-dialog>취소</button><button class="button" type="submit">추가 적용</button></div></form></dialog>
     <script src="/app.js" defer></script>
   </body>
 </html>

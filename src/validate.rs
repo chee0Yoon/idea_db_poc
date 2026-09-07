@@ -1242,6 +1242,31 @@ fn validate_baseline(b: &BaselineData, d: &str, lk: &Overlay, issues: &mut Vec<I
     }
 }
 
+fn comparator_accepts(comparator: Comparator, observed: f64, threshold: f64) -> bool {
+    match comparator {
+        Comparator::Lt => observed < threshold,
+        Comparator::Lte => observed <= threshold,
+        Comparator::Gt => observed > threshold,
+        Comparator::Gte => observed >= threshold,
+        Comparator::Eq => observed == threshold,
+        Comparator::Ne => observed != threshold,
+    }
+}
+
+fn observation_supports_quantitative_met(
+    observation: &ObservationData,
+    criterion: &Criterion,
+    observed_value: f64,
+    goal: &GoalData,
+    assessment: &AssessmentData,
+) -> bool {
+    observation.status == ObservationStatus::Observed
+        && observation.project_id == goal.project_id
+        && observation.target_revision_id.as_deref() == Some(assessment.target_revision_id.as_str())
+        && observation.metric.as_deref() == criterion.metric.as_deref()
+        && observation.value.as_ref().and_then(|value| value.as_f64()) == Some(observed_value)
+}
+
 fn validate_assessment(a: &AssessmentData, d: &str, lk: &Overlay, issues: &mut Vec<Issue>) {
     let scope = Scope {
         root_revision_id: a.root_revision_id.clone(),
@@ -1364,6 +1389,80 @@ fn validate_assessment(a: &AssessmentData, d: &str, lk: &Overlay, issues: &mut V
                 "assessment_missing_evidence",
                 "official met assessments need scoped observations",
             ));
+        }
+        if a.origin == ProposalOrigin::Official && !a.evidence_observation_ids.is_empty() {
+            let evidence = a
+                .evidence_observation_ids
+                .iter()
+                .filter_map(|id| lk.get(id).and_then(StoredRecord::as_observation))
+                .collect::<Vec<_>>();
+            if !evidence.iter().any(|observation| {
+                observation.status == ObservationStatus::Observed
+                    && observation.project_id == goal.project_id
+                    && observation.target_revision_id.as_deref()
+                        == Some(a.target_revision_id.as_str())
+            }) {
+                issues.push(Issue::new(
+                    format!("{d}.evidence_observation_ids"),
+                    "assessment_missing_evidence",
+                    "official met needs at least one observed, scoped evidence value; failed, invalid, not_observed, and negative records are context only",
+                ));
+            }
+            for criterion in required
+                .iter()
+                .copied()
+                .filter(|criterion| criterion.kind == CriterionKind::Quantitative)
+            {
+                let Some(result) = a.criteria_results.iter().find(|result| {
+                    result.criterion_id == criterion.criterion_id
+                        && result.status == JudgeStatus::Met
+                }) else {
+                    continue;
+                };
+                let Some(observed_value) = result.observed_value else {
+                    issues.push(Issue::new(
+                        format!("{d}.criteria_results"),
+                        "assessment_status_mismatch",
+                        format!(
+                            "quantitative met criterion '{}' needs observed_value",
+                            criterion.criterion_id
+                        ),
+                    ));
+                    continue;
+                };
+                if criterion.comparator.zip(criterion.threshold).is_none_or(
+                    |(comparator, threshold)| {
+                        !comparator_accepts(comparator, observed_value, threshold)
+                    },
+                ) {
+                    issues.push(Issue::new(
+                        format!("{d}.criteria_results"),
+                        "assessment_status_mismatch",
+                        format!(
+                            "observed_value {observed_value} contradicts the comparator for met criterion '{}'",
+                            criterion.criterion_id
+                        ),
+                    ));
+                }
+                if !evidence.iter().any(|observation| {
+                    observation_supports_quantitative_met(
+                        observation,
+                        criterion,
+                        observed_value,
+                        goal,
+                        a,
+                    )
+                }) {
+                    issues.push(Issue::new(
+                        format!("{d}.evidence_observation_ids"),
+                        "assessment_missing_evidence",
+                        format!(
+                            "met criterion '{}' needs an observed evidence value with the same metric and value",
+                            criterion.criterion_id
+                        ),
+                    ));
+                }
+            }
         }
     }
 

@@ -9,17 +9,24 @@ publish = false
 name = "idea-db"
 path = "src/main.rs"
 
+[[bin]]
+name = "idea-db-mcp"
+path = "src/bin/idea-db-mcp.rs"
+
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "matched-path", "original-uri"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }
 tower-http = { version = "0.6", default-features = false, features = ["fs"] }
 tower = { version = "0.5", default-features = false }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.10"
 hex = "0.4"
 time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+rmcp = { version = "=3.2.0", default-features = false, features = ["server", "macros", "schemars", "transport-io"] }
+schemars = "1"
+unicode-normalization = "0.1"
 
 [profile.release]
 opt-level = 2

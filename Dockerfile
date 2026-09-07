@@ -5,15 +5,17 @@ FROM ${RUST_IMAGE} AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY docs/mcp-intake.md docs/api.md ./docs/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release --locked && cp target/release/idea-db /idea-db
+    cargo build --release --locked && cp target/release/idea-db /idea-db && cp target/release/idea-db-mcp /idea-db-mcp
 
 # Optional API-only deployment; NEO4J_URI points to an existing Neo4j service.
 FROM debian:trixie-slim AS api
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wget tini \
     && rm -rf /var/lib/apt/lists/* && useradd --system --uid 7474 idea-db
 COPY --from=builder /idea-db /usr/local/bin/idea-db
+COPY --from=builder /idea-db-mcp /usr/local/bin/idea-db-mcp
 COPY static /opt/idea-db/static
 ENV IDEA_DB_BIND=0.0.0.0:8080 STATIC_DIR=/opt/idea-db/static
 USER 7474
@@ -25,6 +27,7 @@ ENTRYPOINT ["tini", "-g", "--", "/usr/local/bin/idea-db"]
 # Default: one independently runnable image containing Neo4j and the Rust API.
 FROM ${NEO4J_IMAGE} AS standalone
 COPY --from=builder /idea-db /usr/local/bin/idea-db
+COPY --from=builder /idea-db-mcp /usr/local/bin/idea-db-mcp
 COPY static /opt/idea-db/static
 COPY scripts/standalone-entrypoint.sh /opt/idea-db/entrypoint.sh
 RUN chmod 755 /opt/idea-db/entrypoint.sh

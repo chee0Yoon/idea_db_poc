@@ -10,6 +10,8 @@ services:
     environment:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Run make init-env first}
       IDEA_DB_TOKEN: ${IDEA_DB_TOKEN:-}
+      IDEA_DB_EMBEDDING_URL: ${IDEA_DB_EMBEDDING_URL:-http://host.docker.internal:11434}
+      IDEA_DB_EMBEDDING_MODEL: ${IDEA_DB_EMBEDDING_MODEL:-embeddinggemma:300m}
     volumes:
       - idea-data:/data
       - idea-logs:/logs

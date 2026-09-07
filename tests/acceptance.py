@@ -20,8 +20,14 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib import error, parse, request
 
+from mcp_client import McpProtocolError, McpToolError, call_tool
+
 
 Json = dict[str, Any]
+
+
+class JsonNumber(str):
+    """A number token kept exactly as the Rust HTTP serializer emitted it."""
 
 
 class AcceptanceFailure(AssertionError):
@@ -60,16 +66,83 @@ class Api:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self._prepared_packages: dict[str, tuple[str, str]] = {}
+        self._prepared_lock = threading.Lock()
 
     def get(self, path: str, **params: Any) -> Json:
         query = {key: value for key, value in params.items() if value is not None}
         suffix = "?" + parse.urlencode(query) if query else ""
         return self._request("GET", path + suffix, None)[1]
 
+    def get_preserving_numbers(self, path: str, **params: Any) -> Json:
+        """Read one response while retaining its JSON number spellings for a digest."""
+        query = {key: value for key, value in params.items() if value is not None}
+        suffix = "?" + parse.urlencode(query) if query else ""
+        return self._request(
+            "GET", path + suffix, None, preserve_number_lexemes=True
+        )[1]
+
     def post(self, path: str, body: Json) -> Json:
+        if path == "/api/search":
+            return self._request("POST", path, body)[1]
+        tools = {
+            "/api/captures": "idea_capture_create",
+            "/api/packages/validate": "idea_package_validate",
+            "/api/occurrences/replace": "idea_occurrence_replace",
+            "/api/import": "idea_import",
+        }
+        if path == "/api/packages/apply":
+            return self._apply_prepared_package(body)
+        tool = tools.get(path)
+        if not tool:
+            raise AcceptanceFailure(f"HTTP mutation is forbidden in tests: POST {path}")
+        return self._mcp(tool, {"body": body})
+
+    def raw_http_post(self, path: str, body: Json) -> Json:
+        """Use HTTP POST only to assert that REST mutation routes reject it."""
         return self._request("POST", path, body)[1]
 
-    def _request(self, method: str, path: str, body: Json | None) -> tuple[int, Json]:
+    def _mcp(self, tool: str, arguments: Json) -> Json:
+        try:
+            return call_tool(tool, arguments, max(self.timeout, 180.0))
+        except McpToolError as exc:
+            payload = dict(exc.error)
+            status = payload.get("status", 500)
+            if not isinstance(status, int):
+                status = 500
+            body: Json = {
+                "code": payload.get("code", "mcp_tool_error"),
+                "message": payload.get("message", "MCP tool failed"),
+            }
+            if "details" in payload:
+                body["details"] = payload["details"]
+            raise ApiError(status, body, "MCP", tool) from exc
+        except McpProtocolError as exc:
+            raise AcceptanceFailure(f"MCP {tool} failed: {exc}") from exc
+
+    def _apply_prepared_package(self, body: Json) -> Json:
+        raw_key = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        with self._prepared_lock:
+            prepared = self._prepared_packages.get(raw_key)
+            if prepared is None:
+                preview = self._mcp("idea_upload_preview", {"body": {"package": body}})
+                upload_id = preview.get("upload_id")
+                digest = preview.get("prepared_digest")
+                if not isinstance(upload_id, str) or not isinstance(digest, str):
+                    raise AcceptanceFailure(f"MCP preview returned no upload handle/digest: {preview!r}")
+                prepared = upload_id, digest
+                self._prepared_packages[raw_key] = prepared
+        upload_id, digest = prepared
+        return self._mcp("idea_package_apply", {"body": {"upload_id": upload_id, "prepared_digest": digest}})
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: Json | None,
+        *,
+        preserve_number_lexemes: bool = False,
+    ) -> tuple[int, Json]:
         url = self.base_url + path
         payload = None
         headers = {"Accept": "application/json"}
@@ -82,7 +155,11 @@ class Api:
         try:
             with request.urlopen(req, timeout=self.timeout) as response:
                 raw = response.read()
-                parsed = json.loads(raw) if raw else {}
+                parsed = (
+                    json.loads(raw, parse_float=JsonNumber, parse_int=JsonNumber)
+                    if raw and preserve_number_lexemes
+                    else json.loads(raw) if raw else {}
+                )
                 return response.status, parsed
         except error.HTTPError as exc:
             raw = exc.read()
@@ -101,9 +178,28 @@ def require(condition: Any, message: str) -> None:
 
 
 def canonical_digest(value: Any) -> str:
-    encoded = json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    def encode(item: Any) -> str:
+        if isinstance(item, JsonNumber):
+            return str(item)
+        if item is None:
+            return "null"
+        if item is True:
+            return "true"
+        if item is False:
+            return "false"
+        if isinstance(item, (int, float)):
+            return json.dumps(item, allow_nan=False, separators=(",", ":"))
+        if isinstance(item, str):
+            return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+        if isinstance(item, list):
+            return "[" + ",".join(encode(child) for child in item) + "]"
+        if isinstance(item, dict):
+            return "{" + ",".join(
+                encode(key) + ":" + encode(item[key]) for key in sorted(item)
+            ) + "}"
+        raise TypeError(f"unsupported JSON value for canonical digest: {type(item)!r}")
+
+    encoded = encode(value).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
@@ -296,6 +392,23 @@ class Suite:
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.25)
+
+    def rest_mutations_are_rejected(self) -> None:
+        requests = {
+            "/api/packages/validate": {"protocol_version": 1},
+            "/api/packages/apply": {"protocol_version": 1},
+            "/api/captures": {"project_id": "read_only_probe"},
+            "/api/occurrences/replace": {"project_id": "read_only_probe"},
+            "/api/import": {"document": {}},
+        }
+        for path, body in requests.items():
+            try:
+                self.api.raw_http_post(path, body)
+            except ApiError as exc:
+                require(exc.status == 405, f"REST mutation {path} returned {exc.status}, expected 405")
+            else:
+                raise AcceptanceFailure(f"REST mutation {path} unexpectedly succeeded")
+        self.ok("REST mutation endpoints reject HTTP even when an API token is supplied")
 
     def apply(self, body: Json) -> Json:
         result = self.api.post("/api/packages/apply", body)
@@ -1104,8 +1217,10 @@ class Suite:
         self.ok("concurrent same-head edits have exactly one atomic winner")
 
     def verify_export(self, project_id: str, expected_ids: set[str], *, unresolved_artifact: str | None = None) -> None:
-        document = self.api.get("/api/export", project_id=project_id, include_receipts="true")
-        require(document.get("format") == "idea_db.export" and document.get("format_version") == 1,
+        document = self.api.get_preserving_numbers(
+            "/api/export", project_id=project_id, include_receipts="true"
+        )
+        require(document.get("format") == "idea_db.export" and int(document.get("format_version", 0)) == 1,
                 "unexpected export format")
         require(document.get("scope", {}).get("project_id") == project_id, "export scope mismatch")
         require(document.get("digest") == canonical_digest(document["content"]), "export digest mismatch")
@@ -1113,7 +1228,7 @@ class Suite:
         record_ids = [record["id"] for record in records]
         require(len(record_ids) == len(set(record_ids)), "export contains duplicate application IDs")
         require(expected_ids <= set(record_ids), f"export omitted records: {sorted(expected_ids - set(record_ids))}")
-        seqs = [record["seq"] for record in records]
+        seqs = [int(record["seq"]) for record in records]
         require(seqs == sorted(seqs), "export does not preserve commit order")
         heads = [head for head in document["content"]["heads"] if head["project_id"] == project_id]
         require(len(heads) == 1 and heads[0].get("working_head"), "export omitted project head")
@@ -1150,6 +1265,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"TAP version 13\n# acceptance run prefix: {prefix}", flush=True)
     try:
         suite.wait_ready(args.wait_seconds)
+        suite.rest_mutations_are_rejected()
         software = suite.software_domain()
         modeling = suite.modeling_domain()
         planning = suite.planning_domain()

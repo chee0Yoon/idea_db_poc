@@ -32,6 +32,7 @@ const SCHEMA: &[&str] = &[
     "CREATE CONSTRAINT idea_db_record_id IF NOT EXISTS FOR (n:Record) REQUIRE n.id IS UNIQUE",
     "CREATE CONSTRAINT idea_db_receipt_key IF NOT EXISTS FOR (n:Receipt) REQUIRE n.idempotency_key IS UNIQUE",
     "CREATE CONSTRAINT idea_db_meta_id IF NOT EXISTS FOR (n:IdeaDbMeta) REQUIRE n.id IS UNIQUE",
+    "CREATE CONSTRAINT idea_db_upload_id IF NOT EXISTS FOR (n:IdeaDbUpload) REQUIRE n.upload_id IS UNIQUE",
     "CREATE INDEX idea_db_record_kind IF NOT EXISTS FOR (n:Record) ON (n.kind)",
     "CREATE INDEX idea_db_record_seq IF NOT EXISTS FOR (n:Record) ON (n.seq)",
     "CREATE INDEX idea_db_record_project IF NOT EXISTS FOR (n:Record) ON (n.project_id)",

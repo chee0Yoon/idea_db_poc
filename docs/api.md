@@ -1,3 +1,5 @@
+> **2026-09-07 MCP 전환:** 이 문서의 도메인 JSON 필드는 유지하며, 아래 기존 POST 경로 표기는 payload 설명을 위한 이전 명칭입니다. 해당 REST 쓰기 경로는 모두 405입니다. 변경은 MCP `idea_capture_create`, `idea_package_validate`, `idea_upload_preview`, `idea_upload_apply`, `idea_occurrence_replace`, `idea_import`만 사용합니다. 기존 apply payload는 preview의 `body.package`에 넣고, 실제 apply는 `body: {upload_id, prepared_digest}`를 받습니다. HTTP에는 GET과 읽기 전용 POST `/api/search`만 남습니다. 자세한 현행 전송 계약은 [mcp-intake.md](mcp-intake.md)입니다. MCP `tools/call` 도메인 실패는 `isError: true`, `structuredContent.error: {status,code,message,details}`입니다.
+
 # idea_db API 계약 v1
 
 상태: **고정(frozen), 개정 r2** · 2026-09-07 · 소유자: Opus(백엔드 구현) · 소비자: Main(통합/수용), UI 워커(`static/**`), 수용 워커(`tests/*.py`)
@@ -17,7 +19,7 @@
 이 문서는 구현보다 먼저 고정한 계약이다. 필드를 조용히 바꾸지 않는다. 변경이 필요하면 이 문서를 먼저 고치고 Main에 알린다.
 
 - 프로토콜 버전: `1` (`protocol_version`)
-- 전송: HTTP/1.1, JSON(UTF-8). 요청/응답 `Content-Type: application/json`.
+- 전송: 변경은 MCP stdio JSON-RPC, 조회는 MCP 또는 HTTP JSON. MCP 프로토콜 버전과 도메인 `protocol_version: 1`은 별개다.
 - 저장소: Neo4j 5.26 Community가 유일한 권위 저장소다. 메모리/파일 fallback은 없다.
 - 시간: 모든 시각은 RFC 3339. `occurred_at`류 클라이언트 시각은 **오프셋 필수**(`Z` 또는 `+09:00`). 서버 시각 `recorded_at`은 UTC 밀리초(`2026-09-07T02:11:04.123Z`).
 

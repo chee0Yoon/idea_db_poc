@@ -847,6 +847,51 @@ fn evidence_and_completion_must_agree_with_scope_and_required_criteria() {
 }
 
 #[test]
+fn official_numeric_met_must_match_comparator_and_observed_evidence() {
+    let c = login_ctx();
+
+    let mut contradicts_threshold = judged_package();
+    contradicts_threshold.records[3].data["criteria_results"][0]["observed_value"] = json!(0.05);
+    contradicts_threshold.records[2].data["value"] = json!(0.05);
+    expect_code(&contradicts_threshold, &c, "assessment_status_mismatch");
+
+    let mut invents_result_value = judged_package();
+    invents_result_value.records[3].data["criteria_results"][0]["observed_value"] = json!(0.0003);
+    expect_code(&invents_result_value, &c, "assessment_missing_evidence");
+
+    let mut wrong_metric = judged_package();
+    wrong_metric.records[2].data["metric"] = json!("unrelated_rate");
+    expect_code(&wrong_metric, &c, "assessment_missing_evidence");
+}
+
+#[test]
+fn failed_or_negative_records_are_context_not_sole_support_for_official_met() {
+    let c = login_ctx();
+    for status in ["failed", "negative"] {
+        let mut unsupported = judged_package();
+        unsupported.records[2].data["status"] = json!(status);
+        unsupported.records[2].data["value"] = Value::Null;
+        expect_code(&unsupported, &c, "assessment_missing_evidence");
+    }
+
+    let mut contextual = judged_package();
+    contextual.records.insert(
+        3,
+        serde_json::from_value(json!({
+            "id":"obs_negative_context","kind":"observation","data":{
+                "project_id":"proj_login","target_revision_id":"rev_lockout_1",
+                "metric":"takeover_rate","status":"negative",
+                "occurred_at":"2026-01-01T00:00:00Z","actor":"human:test"
+            }
+        }))
+        .unwrap(),
+    );
+    contextual.records[4].data["evidence_observation_ids"] =
+        json!(["obs_checked", "obs_negative_context"]);
+    run(&contextual, &c).expect("counterevidence may accompany matching observed support");
+}
+
+#[test]
 fn qualitative_observations_do_not_require_invented_numeric_values() {
     let c = login_ctx();
     for value in [json!("인터뷰에서 사용자가 목적을 설명했다"), json!(true)] {

@@ -11,19 +11,65 @@ case "$test_suite" in
 esac
 lifecycle_dir="${IDEA_DB_REPORT_DIR:-$PWD/test-results/$test_run}"
 test_dir=$(mktemp -d)
+export IDEA_DB_MCP_LOG_DIR="$lifecycle_dir/logs/$test_run/mcp"
 primary="${test_run}-primary"
 restored="${test_run}-restored"
 test_password=$(openssl rand -hex 24)
+# Bash 3 with `set -u` treats an empty array expansion as unbound.  Keep a
+# harmless sentinel so cleanup can always scan this list on macOS.
+preserved_log_volumes=("")
+
+preserve_container_logs() {
+  local container=$1
+  local label=$2
+  local volume=$3
+  local destination="$lifecycle_dir/logs/$test_run/${label}-logs"
+
+  # `/logs` is a mounted volume, so copy it while its owning container still
+  # exists.  If that copy cannot be made, retain the volume for manual
+  # recovery instead of deleting the only remaining log evidence.
+  if ! docker inspect "$container" >/dev/null 2>&1; then
+    return 0
+  fi
+  mkdir -p "$destination"
+  if docker cp "$container:/logs/." "$destination/" >/dev/null 2>&1; then
+    return 0
+  fi
+  printf 'Could not copy /logs from %s; retaining volume %s for recovery.\n' \
+    "$container" "$volume" >&2
+  preserved_log_volumes+=("$volume")
+}
+
+keep_log_volume() {
+  local volume=$1
+  local kept
+  for kept in "${preserved_log_volumes[@]}"; do
+    [[ "$kept" == "$volume" ]] && return 0
+  done
+  return 1
+}
+
 cleanup() {
   local status=$?
   trap - EXIT
+  # Preserve logs on success and failure before removing only owned containers.
+  mkdir -p "$lifecycle_dir/logs/$test_run"
+  docker logs --timestamps "$primary" > "$lifecycle_dir/logs/$test_run/primary.log" 2>&1 || true
+  docker logs --timestamps "$restored" > "$lifecycle_dir/logs/$test_run/restored.log" 2>&1 || true
+  preserve_container_logs "$primary" primary "${test_run}-primary-logs"
+  preserve_container_logs "$restored" restored "${test_run}-restored-logs"
   if ((status != 0)); then
     docker logs --tail 100 "$primary" 2>/dev/null || true
     docker logs --tail 100 "$restored" 2>/dev/null || true
   fi
   docker rm -f "$primary" "$restored" >/dev/null 2>&1 || true
   for suffix in primary-data primary-logs restored-data restored-logs; do
-    docker volume rm "${test_run}-${suffix}" >/dev/null 2>&1 || true
+    volume="${test_run}-${suffix}"
+    if keep_log_volume "$volume"; then
+      printf 'Preserved Docker log volume: %s\n' "$volume" >&2
+      continue
+    fi
+    docker volume rm "$volume" >/dev/null 2>&1 || true
   done
   rm -rf "$test_dir"
   exit "$status"
@@ -31,6 +77,7 @@ cleanup() {
 trap cleanup EXIT
 umask 077
 printf 'NEO4J_PASSWORD=%s\n' "$test_password" > "$test_dir/env"
+printf 'IDEA_DB_EMBEDDING_URL=http://host.docker.internal:11434\nIDEA_DB_EMBEDDING_MODEL=embeddinggemma:300m\n' >> "$test_dir/env"
 
 wait_ready() {
   local container=$1
@@ -50,22 +97,31 @@ wait_ready() {
 start_container() {
   local container=$1 suffix=$2
   docker run -d --name "$container" --label "idea_db.test=$test_run" \
+    --add-host host.docker.internal:host-gateway \
     --env-file "$test_dir/env" -p 127.0.0.1::8080 \
     -v "${test_run}-${suffix}-data:/data" -v "${test_run}-${suffix}-logs:/logs" \
     "$test_image" >/dev/null
   wait_ready "$container"
 }
 base_for() { printf 'http://%s' "$(docker port "$1" 8080/tcp)"; }
+mcp_for() {
+  python3 - "$1" <<'PY'
+import json, sys
+print(json.dumps(["docker", "exec", "-i", sys.argv[1], "idea-db-mcp"]))
+PY
+}
 
 if [[ ${IDEA_DB_SKIP_BUILD:-0} != 1 ]]; then
   docker build --target standalone -t "$test_image" .
 fi
 start_container "$primary" primary
 primary_url=$(base_for "$primary")
+export IDEA_DB_MCP_COMMAND_JSON="$(mcp_for "$primary")"
 if [[ "$test_suite" == lifecycle ]]; then
   python3 tests/lifecycle.py --base-url "$primary_url" --output-dir "$lifecycle_dir"
 else
   python3 tests/acceptance.py --base-url "$primary_url"
+  python3 tests/mcp_ingest.py --base-url "$primary_url" --output-dir "$lifecycle_dir/mcp-ingest"
 fi
 python3 scripts/idea-db-client.py --url "$primary_url" export --output "$test_dir/before.json"
 
@@ -88,6 +144,7 @@ fi
 
 start_container "$restored" restored
 restored_url=$(base_for "$restored")
+export IDEA_DB_MCP_COMMAND_JSON="$(mcp_for "$restored")"
 python3 scripts/idea-db-client.py --url "$restored_url" import "$test_dir/before.json" >/dev/null
 python3 scripts/idea-db-client.py --url "$restored_url" export --output "$test_dir/restored.json"
 python3 - "$test_dir/before.json" "$test_dir/restored.json" <<'PY'

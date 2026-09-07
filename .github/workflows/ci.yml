@@ -17,6 +17,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Install local embedding runtime for integration tests
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          OLLAMA_HOST=0.0.0.0:11434 ollama serve > /tmp/idea-db-ollama.log 2>&1 &
+          for attempt in $(seq 1 60); do curl -fsS http://127.0.0.1:11434/api/tags && break; sleep 1; done
+          ollama pull embeddinggemma:300m
       - run: make docker-check
       - run: make lifecycle-check
       - uses: actions/upload-artifact@v4

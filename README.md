@@ -35,9 +35,9 @@ docker run -d --name idea-db \
 
 ## 범위
 
-한 명의 신뢰된 소유자가 여러 로컬 클라이언트로 쓰는 MVP입니다. 선택적 API bearer token을 지원하며 팀 권한, 인터넷 서비스 운영, HA는 후속 범위입니다. GUI의 AI 제안은 공식 평가와 별도로 표시하며 자동 모델 호출은 없습니다. 수동 JSON 패키지와 로컬 AI 스킬이 같은 입력 API를 사용합니다.
+한 명의 신뢰된 소유자가 여러 로컬 클라이언트로 쓰는 MVP입니다. 선택적 API bearer token을 지원하며 팀 권한, 인터넷 서비스 운영, HA는 후속 범위입니다. 대시보드는 조회 전용입니다. 원자화와 구조화는 로컬 구독 AI 클라이언트가 담당하고 모든 변경은 MCP로 제출합니다. MCP는 로컬 Ollama 임베딩을 생성하지만 생성형 LLM을 실행하지 않습니다.
 
-본문·관측·평가는 불변 기록입니다. 의미가 바뀌는 Idea는 파생으로 생성하고, 조합은 정확한 Revision을 고정합니다. 검색의 역할은 occurrence에 붙으며, 엄격 일치와 관련 문맥을 구분합니다. 임베딩이 없는 환경에서도 텍스트 검색으로 동작합니다.
+본문·관측·평가는 불변 기록입니다. 의미가 바뀌는 Idea는 파생으로 생성하고, 조합은 정확한 Revision을 고정합니다. 검색의 역할은 occurrence에 붙으며, 엄격 일치와 관련 문맥을 구분합니다. 대시보드의 어휘 검색은 모델 없이 동작합니다. MCP 하이브리드 검색과 Idea 업로드는 로컬 임베딩 설정이 필요하며 실패 시 명시적 오류를 반환합니다.
 
 ## 개발 및 검증
 
@@ -64,23 +64,45 @@ Neo4j의 개별 노드와 타입 관계가 권위 저장소이며 응용 ID를 �
 
 Neo4j Community는 공식 [Docker 이미지](https://hub.docker.com/_/neo4j/)를 기반으로 하며, 해당 구성 요소의 라이선스와 공지는 원본 이미지/배포물에 포함됩니다. 응용 DB 엔진 자체를 Rust로 다시 구현하는 작업은 이번 범위에 포함하지 않습니다.
 
-## 로컬 AI와 수동 입력
+## 로컬 AI와 MCP 연결
 
-브라우저에서 프로젝트를 만든 뒤 원문을 캡처하고, 구성에서 부모를 선택하여 하위 Schema/Core/Idea를 추가합니다. 복잡한 목표·관측·관계 입력은 목표 추가 버튼의 JSON 패키지 편집기로 검토합니다. 요청 형식은 `docs/api.md`, 재현 예시는 `examples/`에 있습니다.
+[입력 계약](docs/mcp-intake.md)과 [로컬 AI 스킬](skills/idea-db-input/SKILL.md)을 사용합니다.
+대시보드에는 생성·수정·삭제·업로드 기능이 없으며, 기존 REST 쓰기 요청도 405로 거절합니다.
+
+1. 호스트의 Ollama에서 `ollama pull embeddinggemma:300m`을 실행합니다(약 622MB).
+2. `make up`으로 Neo4j·대시보드를 시작합니다. Compose는 호스트 Ollama를 사용합니다.
+3. 로컬 AI 클라이언트의 MCP 설정에 다음 stdio 서버를 등록합니다. 명령 경로를 이 저장소의 절대 경로로 바꿉니다. 예시는 `mcp.example.json`에도 있습니다.
+
+```json
+{
+  "mcpServers": {
+    "idea_db": {
+      "command": "/absolute/path/to/idea_db_neo4j/scripts/idea-db-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+실행기를 `cwd`로 지정할 수 없는 클라이언트는 `docker compose -f /absolute/path/compose.yaml exec -T idea-db idea-db-mcp`에 해당하는 인수 배열을 사용합니다. MCP는 공식 Rust SDK rmcp 3.2.0으로 구현하며 stdio 전송을 사용합니다. 생성형 AI 구독과 임베딩 API는 별개이므로, 임베딩은 지정한 로컬 모델을 사용합니다. DB 이미지 안에 생성형 모델이나 구독 토큰을 넣지 않습니다.
+
+흐름은 **원문 보존 → 로컬 AI 원자화·구조화 → MCP preview → 임베딩·유사 후보 검토 → 업로드 ID로 apply**입니다. 유사 후보가 자동 병합되지는 않습니다. 삭제는 새 조합에서 슬롯을 제거하는 변경이며 과거 기록은 남습니다.
+
+CLI도 동일한 MCP를 사용합니다. `apply`에는 원본 패키지가 아니라 preview의 `upload_id`와 `prepared_digest` 두 필드만 넣습니다.
 
 ```sh
-python3 scripts/idea-db-client.py --url http://127.0.0.1:8080 validate package.json
-python3 scripts/idea-db-client.py --url http://127.0.0.1:8080 apply package.json
+export IDEA_DB_MCP_COMMAND_JSON='["docker","compose","exec","-T","idea-db","idea-db-mcp"]'
+python3 scripts/idea-db-client.py validate package.json
+python3 scripts/idea-db-client.py preview package.json > preview.json
+# preview를 검토하고 두 필드로 apply.json을 작성합니다.
+python3 scripts/idea-db-client.py apply apply.json
 python3 scripts/idea-db-client.py export --output backup.json
-# 비어 있는 별도 DB에만 복원할 수 있습니다.
-python3 scripts/idea-db-client.py --url http://127.0.0.1:8081 import backup.json
+# 복구 대상의 MCP 명령을 지정한 뒤 빈 DB에만 복원합니다.
+python3 scripts/idea-db-client.py import backup.json
 ```
 
-로컬 모델은 설치된 실행 명령을 직접 지정합니다. 다음의 모델 이름은 보유한 모델로 바꾸세요. 모델 설치나 다운로드는 자동 수행하지 않습니다.
+`IDEA_DB_EMBEDDING_URL`은 허용된 로컬 Ollama origin만 받으며, `IDEA_DB_EMBEDDING_MODEL`은 설치된 모델 이름입니다. 모델 manifest digest와 입력 형식을 벡터 프로필에 고정합니다. 같은 이름의 모델이 바뀌면 과거 벡터를 같은 공간으로 비교하지 않습니다. 미설정/모델 없음/너무 긴 입력/잘못된 벡터는 저장 전에 거절합니다.
 
-```sh
-python3 scripts/idea-db-client.py draft --context context.json \
-  --command-json '["ollama","run","your-model"]' --output draft.json
-```
+스테이징은 미적용 대기 상태 최대 256건, 건당 2MiB까지 보존합니다. 적용 완료 패킷과 로그는 삭제하지 않으며 대기 한도에서 제외합니다. 버린 초안은 `idea_upload_discard {upload_id}`로 철회하면 이력을 남기고 대기 한도를 반환합니다. 컨테이너 재시작 후에도 업로드 ID를 쓸 수 있습니다. domain export에는 포함되지 않으므로 복원 후에는 새 preview가 필요합니다.
 
-이 명령은 스킬·API 계약·선택한 문맥을 표준 입력으로 보내고 JSON 초안만 저장합니다. 검증과 적용은 별도 명령이며, DB는 모델이나 제공자 키를 요구하지 않습니다. `context.json`에는 필요한 원문과 프로젝트 상태만 넣습니다. 인증을 켰다면 클라이언트 및 수용 테스트에 `IDEA_DB_TOKEN` 환경변수를 전달하세요.
+기존 30단계 자료는 구조화된 클라이언트 fixture이며 생성형 AI의 원자화 품질을 증명하지 않습니다. 새 MCP 검증은 실제 로컬 임베딩, 후보 매핑, 저장, 재시도 및 쓰기 우회 차단을 별도로 확인합니다.

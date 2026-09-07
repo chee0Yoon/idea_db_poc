@@ -37,6 +37,18 @@ fn check_protocol(version: u32) -> ApiResult<()> {
     Ok(())
 }
 
+pub(crate) fn check_not_noop(pkg: &Package) -> ApiResult<()> {
+    if pkg.records.is_empty() && pkg.root_change.is_none() && pkg.publish.is_none() {
+        Err(ApiError::validation(vec![Issue::new(
+            "records",
+            "empty_commit",
+            "a package must write a record, move the working head, or publish a root",
+        )]))
+    } else {
+        Ok(())
+    }
+}
+
 /// Refuse a commit that would push the namespace past the size every read is
 /// bounded by.
 ///
@@ -133,6 +145,11 @@ pub async fn validate_only(neo: &Neo4j, body: Value) -> ApiResult<Value> {
     // Reads take the same lock and roll back, so the dry run sees exactly the
     // state a real apply would see.
     let ctx = store::read_context(neo).await?;
+    if let Err(error) = check_not_noop(&pkg) {
+        return Ok(
+            json!({"valid":false,"errors":error.details.as_ref().map(|d|d["issues"].clone()).unwrap_or(json!([])),"warnings":[],"derived":{"records_to_write":0,"next_seq":ctx.seq+1,"context_records_loaded":ctx.records.len()}}),
+        );
+    }
     let next_seq = ctx.seq + 1;
     let head_issue = check_heads(&pkg.expected_heads, &ctx).err();
 
@@ -185,7 +202,18 @@ pub async fn apply(neo: &Neo4j, body: Value) -> ApiResult<Value> {
     let request_digest = util::digest_json(&body);
     let pkg: Package = parse_body(body)?;
     check_protocol(pkg.protocol_version)?;
-    commit_package(neo, pkg, &request_digest, |_, _| Ok(json!({}))).await
+    commit_package(neo, pkg, &request_digest, None, |_, _| Ok(json!({}))).await
+}
+
+/// Apply a package only while its exact prepared upload remains live.
+pub async fn apply_staged(neo: &Neo4j, body: Value, upload_id: &str) -> ApiResult<Value> {
+    let request_digest = util::digest_json(&body);
+    let pkg: Package = parse_body(body)?;
+    check_protocol(pkg.protocol_version)?;
+    commit_package(neo, pkg, &request_digest, Some(upload_id), |_, _| {
+        Ok(json!({}))
+    })
+    .await
 }
 
 /// The one place that turns a validated package into committed records.
@@ -197,13 +225,14 @@ async fn commit_package<F>(
     neo: &Neo4j,
     pkg: Package,
     request_digest: &str,
+    staged_upload_id: Option<&str>,
     decorate: F,
 ) -> ApiResult<Value>
 where
     F: FnOnce(&Plan, &Context) -> ApiResult<Value>,
 {
     let mut tx = neo.begin().await?;
-    let outcome = commit_inner(&mut tx, &pkg, request_digest, decorate).await;
+    let outcome = commit_inner(&mut tx, &pkg, request_digest, staged_upload_id, decorate).await;
     match outcome {
         // The writes already ran and were checked inside the transaction, so
         // committing has nothing left to add.
@@ -231,12 +260,52 @@ async fn commit_inner<F>(
     tx: &mut crate::neo4j::Tx,
     pkg: &Package,
     request_digest: &str,
+    staged_upload_id: Option<&str>,
     decorate: F,
 ) -> ApiResult<Committed>
 where
     F: FnOnce(&Plan, &Context) -> ApiResult<Value>,
 {
     let current_seq = store::lock(tx).await?;
+
+    // The store lock makes this check and the graph writes one serialized
+    // operation. A restore or discard cannot invalidate the handle between
+    // this check and the marker below.
+    if let Some(upload_id) = staged_upload_id {
+        let staged = tx
+            .run_one(crate::neo4j::stmt(
+                "MATCH (s:IdeaDbUpload {upload_id:$upload_id}) \
+                 RETURN s.prepared_digest AS prepared_digest, \
+                 s.invalidated_at AS invalidated_at, s.withdrawn_at AS withdrawn_at, \
+                 s.applied_seq AS applied_seq LIMIT 1",
+                json!({"upload_id":upload_id}),
+            ))
+            .await?;
+        if staged.rows.is_empty() {
+            return Err(ApiError::not_found(format!(
+                "staged upload {upload_id} not found"
+            )));
+        }
+        if !staged.col(0, "invalidated_at").is_none_or(Value::is_null) {
+            return Err(ApiError::validation(vec![Issue::new(
+                "upload_id",
+                "staging_invalidated",
+                format!("staged upload {upload_id} was invalidated by a domain restore; prepare again with a new idempotency key"),
+            )]));
+        }
+        if !staged.col(0, "withdrawn_at").is_none_or(Value::is_null) {
+            return Err(ApiError::validation(vec![Issue::new(
+                "upload_id",
+                "staging_withdrawn",
+                format!("staged upload {upload_id} was withdrawn; prepare a new upload"),
+            )]));
+        }
+        if staged.col(0, "prepared_digest").and_then(Value::as_str) != Some(request_digest) {
+            return Err(ApiError::bad_request(
+                "prepared_digest mismatch; apply only the reviewed upload handle",
+            ));
+        }
+    }
 
     // Idempotency is checked before the head comparison on purpose: an
     // interrupted client retrying the exact same request must get its original
@@ -247,6 +316,7 @@ where
         }
         return Err(ApiError::idempotency_conflict(&pkg.idempotency_key));
     }
+    check_not_noop(pkg)?;
 
     let ctx = store::write_context(tx, current_seq).await?;
     check_heads(&pkg.expected_heads, &ctx)?;
@@ -276,6 +346,24 @@ where
     // after commit could only report a partial graph, never undo one.
     let results = tx.run(&statements).await?;
     store::verify_relationship_counts(&plan.records, &results)?;
+    // The staged packet becomes applied in the SAME transaction as its receipt
+    // and records. A process death cannot strand a committed upload as pending.
+    if let Some(upload_id) = staged_upload_id {
+        let marked = tx
+            .run_one(crate::neo4j::stmt(
+                "MATCH (s:IdeaDbUpload {upload_id:$upload_id}) \
+                 WHERE s.prepared_digest=$digest AND s.invalidated_at IS NULL \
+                 AND s.withdrawn_at IS NULL AND s.applied_seq IS NULL \
+                 SET s.applied_seq=$seq RETURN count(s) AS marked",
+                json!({"upload_id":upload_id,"digest":request_digest,"seq":seq}),
+            ))
+            .await?;
+        if marked.col(0, "marked").and_then(Value::as_i64) != Some(1) {
+            return Err(ApiError::storage(format!(
+                "staged upload {upload_id} could not be marked applied"
+            )));
+        }
+    }
     Ok(Committed::Written(response))
 }
 
@@ -330,44 +418,7 @@ pub async fn replace_occurrence(neo: &Neo4j, body: Value) -> ApiResult<Value> {
     let request_digest = util::digest_json(&body);
     let req: ReplaceRequest = parse_body(body)?;
     check_protocol(req.protocol_version)?;
-    if req.stage != Stage::Working {
-        return Err(ApiError::validation(vec![Issue::new(
-            "stage",
-            "invalid_field",
-            "an occurrence replacement moves the working head",
-        )]));
-    }
-    if req.slot_path.is_empty() {
-        return Err(ApiError::validation(vec![Issue::new(
-            "slot_path",
-            "invalid_field",
-            "replacing the root itself is a package, not an occurrence edit",
-        )]));
-    }
-    if req.slot_path.len() > graph::MAX_DEPTH {
-        return Err(ApiError::validation(vec![Issue::new(
-            "slot_path",
-            "limit_exceeded",
-            format!("slot path deeper than {}", graph::MAX_DEPTH),
-        )]));
-    }
-    match req.replacement.mode {
-        ReplaceMode::NewRevision if req.replacement.new_revision.is_none() => {
-            return Err(ApiError::validation(vec![Issue::new(
-                "replacement.new_revision",
-                "invalid_field",
-                "mode 'new_revision' must carry the new revision",
-            )]))
-        }
-        ReplaceMode::ExistingRevision if req.replacement.target_revision_id.is_none() => {
-            return Err(ApiError::validation(vec![Issue::new(
-                "replacement.target_revision_id",
-                "invalid_field",
-                "mode 'existing_revision' must name the target revision",
-            )]))
-        }
-        _ => {}
-    }
+    validate_replace_request(&req)?;
 
     // The plan is built inside the transaction, from state read under the lock.
     let mut tx = neo.begin().await?;
@@ -391,7 +442,7 @@ pub async fn replace_occurrence(neo: &Neo4j, body: Value) -> ApiResult<Value> {
         .as_ref()
         .map(|rc| rc.after_revision_id.clone())
         .unwrap_or_default();
-    commit_package(neo, pkg, &request_digest, move |plan, ctx| {
+    commit_package(neo, pkg, &request_digest, None, move |plan, ctx| {
         Ok(json!({
             "new_root_revision_id": new_root,
             "mapping": mapping,
@@ -399,6 +450,95 @@ pub async fn replace_occurrence(neo: &Neo4j, body: Value) -> ApiResult<Value> {
         }))
     })
     .await
+}
+
+/// Build and validate an occurrence replacement package without committing it.
+/// The transaction is rolled back before any package or metadata is returned.
+pub async fn preview_replacement(neo: &Neo4j, body: Value) -> ApiResult<Value> {
+    let req: ReplaceRequest = parse_body(body)?;
+    check_protocol(req.protocol_version)?;
+    validate_replace_request(&req)?;
+    let mut tx = neo.begin().await?;
+    let outcome = async {
+        let (pkg, mapping, old_chain) = prepare_replacement(&mut tx, &req).await?;
+        let seq = store::lock(&mut tx).await?;
+        let ctx = store::write_context(&mut tx, seq).await?;
+        let plan = validate::validate_package(&pkg, &ctx, seq + 1, &util::now_utc_millis())
+            .map_err(ApiError::validation)?;
+        check_capacity(ctx.records.len(), plan.records.len())?;
+        let new_root = pkg
+            .root_change
+            .as_ref()
+            .map(|c| c.after_revision_id.clone())
+            .unwrap_or_default();
+        Ok(json!({
+            "package": package_value(&pkg),
+            "replacement_result": {
+                "new_root_revision_id": new_root,
+                "mapping": mapping,
+                "pinned_unchanged": pinned_unchanged(&plan, &ctx, &new_root, &old_chain),
+            }
+        }))
+    }
+    .await;
+    tx.rollback().await;
+    outcome
+}
+
+fn validate_replace_request(req: &ReplaceRequest) -> ApiResult<()> {
+    if req.stage != Stage::Working
+        || req.slot_path.is_empty()
+        || req.slot_path.len() > graph::MAX_DEPTH
+    {
+        let (path, code, message) = if req.stage != Stage::Working {
+            (
+                "stage",
+                "invalid_field",
+                "an occurrence replacement moves the working head".to_string(),
+            )
+        } else if req.slot_path.is_empty() {
+            (
+                "slot_path",
+                "invalid_field",
+                "replacing the root itself is a package, not an occurrence edit".to_string(),
+            )
+        } else {
+            (
+                "slot_path",
+                "limit_exceeded",
+                format!("slot path deeper than {}", graph::MAX_DEPTH),
+            )
+        };
+        return Err(ApiError::validation(vec![Issue::new(path, code, message)]));
+    }
+    match req.replacement.mode {
+        ReplaceMode::NewRevision if req.replacement.new_revision.is_none() => {
+            Err(ApiError::validation(vec![Issue::new(
+                "replacement.new_revision",
+                "invalid_field",
+                "mode 'new_revision' must carry the new revision",
+            )]))
+        }
+        ReplaceMode::ExistingRevision if req.replacement.target_revision_id.is_none() => {
+            Err(ApiError::validation(vec![Issue::new(
+                "replacement.target_revision_id",
+                "invalid_field",
+                "mode 'existing_revision' must name the target revision",
+            )]))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn package_value(pkg: &Package) -> Value {
+    json!({
+        "protocol_version": pkg.protocol_version, "idempotency_key": pkg.idempotency_key,
+        "actor": pkg.actor, "reason": pkg.reason,
+        "expected_heads": pkg.expected_heads.iter().map(|h| json!({"project_id":h.project_id,"stage":h.stage,"revision_id":h.revision_id})).collect::<Vec<_>>(),
+        "records": pkg.records.iter().map(|r| json!({"id":r.id,"kind":r.kind,"data":r.data})).collect::<Vec<_>>(),
+        "root_change": pkg.root_change.as_ref().map(|c| json!({"project_id":c.project_id,"stage":c.stage,"after_revision_id":c.after_revision_id,"reason":c.reason,"meaningful":c.meaningful,"decision":c.decision})),
+        "publish": pkg.publish.as_ref().map(|p| json!({"project_id":p.project_id,"root_revision_id":p.root_revision_id,"label":p.label,"published_at":p.published_at,"notes":p.notes})),
+    })
 }
 
 /// A replace whose key was already used: hand back the stored receipt.
@@ -807,6 +947,35 @@ mod tests {
             "the error should name the bound: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn empty_apply_is_rejected_but_server_head_events_are_meaningful() {
+        let empty: Package = serde_json::from_value(json!({
+            "protocol_version":1,"idempotency_key":"empty","actor":"human:test","records":[]
+        }))
+        .unwrap();
+        assert_eq!(
+            code_of(&check_not_noop(&empty).unwrap_err()),
+            "empty_commit"
+        );
+
+        let mut head_only = empty;
+        head_only.root_change = serde_json::from_value(json!({
+            "project_id":"proj_login","stage":"working","after_revision_id":"rev_root",
+            "reason":"adopt","meaningful":true,
+            "decision":{"before":"none","after":"root","rationale":"adopt"}
+        }))
+        .unwrap();
+        check_not_noop(&head_only).expect("a head change writes a server record");
+
+        head_only.root_change = None;
+        head_only.publish = serde_json::from_value(json!({
+            "project_id":"proj_login","root_revision_id":"rev_root","label":"v1",
+            "published_at":"2026-09-07T00:00:00Z"
+        }))
+        .unwrap();
+        check_not_noop(&head_only).expect("a publication writes a server record");
     }
 
     #[test]

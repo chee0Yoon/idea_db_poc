@@ -18,7 +18,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::limits;
 use crate::model::PROTOCOL_VERSION;
 use crate::neo4j::Neo4j;
-use crate::{backup, mutation, query, store};
+use crate::{backup, query, store};
 
 pub struct AppState {
     pub config: Config,
@@ -34,32 +34,37 @@ pub fn router(state: Shared) -> Router {
     let api = Router::new()
         .route("/api/state", get(get_state))
         .route("/api/records/{id}", get(get_record))
-        .route("/api/captures", get(get_captures).post(post_capture))
-        .route("/api/packages/validate", post(post_validate))
-        .route("/api/packages/apply", post(post_apply))
+        .route("/api/captures", get(get_captures))
         .route("/api/occurrences", get(get_occurrences))
-        .route("/api/occurrences/replace", post(post_replace))
         .route("/api/snapshot", get(get_snapshot))
         .route("/api/search", post(post_search))
         .route("/api/goals", get(get_goals))
         .route("/api/export", get(get_export))
+        .route("/api/packages/validate", axum::routing::any(mcp_only))
+        .route("/api/packages/apply", axum::routing::any(mcp_only))
+        .route("/api/occurrences/replace", axum::routing::any(mcp_only))
+        .route("/api/import", axum::routing::any(mcp_only))
+        .route("/api/atomization/preview", axum::routing::any(mcp_only))
+        .route("/api/atomization/prepare", axum::routing::any(mcp_only))
         .layer(DefaultBodyLimit::max(limits::MAX_BODY_BYTES));
-
-    // A restore document is far larger than an ordinary write, so only this
-    // route gets the bigger ceiling.
-    let import = Router::new()
-        .route("/api/import", post(post_import))
-        .layer(DefaultBodyLimit::max(limits::MAX_IMPORT_BYTES));
 
     Router::new()
         .route("/health/live", get(health_live))
         .route("/health/ready", get(health_ready))
         .merge(api)
-        .merge(import)
         // Static files are served from disk at runtime so the UI can be
         // rewritten without rebuilding the binary.
         .fallback_service(ServeDir::new(&static_dir).fallback(ServeFile::new(index)))
         .with_state(state)
+}
+
+async fn mcp_only() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(
+            json!({"code":"mcp_required","message":"Changes are available only through the local stdio MCP server."}),
+        ),
+    )
 }
 
 // ---------------------------------------------------------------- plumbing
@@ -148,7 +153,7 @@ fn parse_json(body: &Bytes) -> ApiResult<Value> {
 
 /// Read endpoints all share one consistent snapshot of state.
 async fn read_ctx(state: &AppState) -> ApiResult<crate::validate::Context> {
-    store::read_context(&state.neo4j).await
+    crate::retry::transient(|| store::read_context(&state.neo4j)).await
 }
 
 // ---------------------------------------------------------------- health
@@ -266,67 +271,6 @@ async fn get_export(
         .map(Json)
 }
 
-// ---------------------------------------------------------------- writes
-
-async fn post_validate(
-    State(state): State<Shared>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> ApiResult<Json<Value>> {
-    enter_write(&state, &headers).await?;
-    mutation::validate_only(&state.neo4j, parse_json(&body)?)
-        .await
-        .map(Json)
-}
-
-async fn post_apply(
-    State(state): State<Shared>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> ApiResult<Json<Value>> {
-    enter_write(&state, &headers).await?;
-    mutation::apply(&state.neo4j, parse_json(&body)?)
-        .await
-        .map(Json)
-}
-
-async fn post_replace(
-    State(state): State<Shared>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> ApiResult<Json<Value>> {
-    enter_write(&state, &headers).await?;
-    mutation::replace_occurrence(&state.neo4j, parse_json(&body)?)
-        .await
-        .map(Json)
-}
-
-async fn post_capture(
-    State(state): State<Shared>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> ApiResult<Response> {
-    enter_write(&state, &headers).await?;
-    let (created, value) = mutation::create_capture(&state.neo4j, parse_json(&body)?).await?;
-    let status = if created {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
-    };
-    Ok((status, Json(value)).into_response())
-}
-
-async fn post_import(
-    State(state): State<Shared>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> ApiResult<Json<Value>> {
-    enter_write(&state, &headers).await?;
-    backup::import(&state.neo4j, parse_json(&body)?)
-        .await
-        .map(Json)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,14 +335,7 @@ mod tests {
         }
     }
 
-    const WRITE_ROUTES: [&str; 6] = [
-        "/api/packages/apply",
-        "/api/packages/validate",
-        "/api/occurrences/replace",
-        "/api/captures",
-        "/api/search",
-        "/api/import",
-    ];
+    const WRITE_ROUTES: [&str; 1] = ["/api/search"];
 
     #[tokio::test]
     async fn a_post_without_a_json_media_type_is_refused_before_the_database() {
@@ -420,7 +357,7 @@ mod tests {
             }
         }
         // A missing header is refused the same way.
-        let reply = post(&base, "/api/packages/apply", None, None).await;
+        let reply = post(&base, "/api/search", None, None).await;
         assert_eq!(reply.status, 415);
         server.abort();
     }
@@ -436,7 +373,7 @@ mod tests {
             "APPLICATION/JSON",
             "application/vnd.idea-db+json",
         ] {
-            let reply = post(&base, "/api/packages/apply", Some(content_type), None).await;
+            let reply = post(&base, "/api/search", Some(content_type), None).await;
             assert_eq!(
                 reply.status, 503,
                 "{content_type} was rejected by the media-type gate"
@@ -450,36 +387,24 @@ mod tests {
     async fn a_token_is_demanded_before_the_media_type_and_the_database() {
         let (base, server) = serve(unreachable_state(Some("s3cret"))).await;
 
-        let anonymous = post(&base, "/api/packages/apply", Some("text/plain"), None).await;
+        let anonymous = post(&base, "/api/search", Some("text/plain"), None).await;
         assert_eq!(
             anonymous.status, 401,
             "an unauthenticated write must not leak"
         );
         assert_eq!(anonymous.code.as_deref(), Some("unauthorized"));
 
-        let wrong = post(
-            &base,
-            "/api/packages/apply",
-            Some("application/json"),
-            Some("nope"),
-        )
-        .await;
+        let wrong = post(&base, "/api/search", Some("application/json"), Some("nope")).await;
         assert_eq!(wrong.status, 401);
 
         // Authenticated but still the wrong media type.
-        let typed = post(
-            &base,
-            "/api/packages/apply",
-            Some("text/plain"),
-            Some("s3cret"),
-        )
-        .await;
+        let typed = post(&base, "/api/search", Some("text/plain"), Some("s3cret")).await;
         assert_eq!(typed.status, 415);
 
         // Authenticated and correctly typed: only the database is missing.
         let allowed = post(
             &base,
-            "/api/packages/apply",
+            "/api/search",
             Some("application/json"),
             Some("s3cret"),
         )
@@ -519,7 +444,7 @@ mod tests {
     async fn no_cors_headers_are_offered() {
         let (base, server) = serve(unreachable_state(None)).await;
         let resp = reqwest::Client::new()
-            .post(format!("{base}/api/packages/apply"))
+            .post(format!("{base}/api/search"))
             .header(reqwest::header::CONTENT_TYPE, "text/plain")
             .header(reqwest::header::ORIGIN, "https://evil.example")
             .body("{}")
@@ -536,6 +461,36 @@ mod tests {
                 resp.headers().get(header).is_none(),
                 "{header} must not be sent"
             );
+        }
+        server.abort();
+    }
+    #[tokio::test]
+    async fn writes_are_unavailable_even_with_valid_credentials() {
+        let (base, server) = serve(unreachable_state(Some("s3cret"))).await;
+        for route in [
+            "/api/packages/apply",
+            "/api/packages/validate",
+            "/api/occurrences/replace",
+            "/api/import",
+            "/api/captures",
+            "/api/atomization/preview",
+            "/api/atomization/prepare",
+        ] {
+            for method in [
+                reqwest::Method::POST,
+                reqwest::Method::PUT,
+                reqwest::Method::PATCH,
+                reqwest::Method::DELETE,
+            ] {
+                let response = reqwest::Client::new()
+                    .request(method, format!("{base}{route}"))
+                    .bearer_auth("s3cret")
+                    .json(&json!({}))
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{route}");
+            }
         }
         server.abort();
     }
