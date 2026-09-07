@@ -42,6 +42,7 @@ const assert = require('node:assert/strict');
     await page.locator('#graph-layer-filter').selectOption('');
     checks.push('schema layer filter narrows actual graph nodes and restores full history');
     const canvas = page.locator('#graph-canvas');
+    await canvas.scrollIntoViewIfNeeded();
     const box = await canvas.boundingBox();
     assert.ok(box.width > 400 && box.height > 300);
     const initial = await canvas.screenshot();
