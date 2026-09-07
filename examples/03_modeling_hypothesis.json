@@ -1,0 +1,369 @@
+{
+  "protocol_version": 1,
+  "idempotency_key": "example-03-modeling-hypothesis",
+  "actor": "human:example",
+  "reason": "가설 파생, 환경/데이터 출처, 실패 관측, 목표와 기준선",
+  "expected_heads": [
+    {
+      "project_id": "proj_churn_model",
+      "stage": "working",
+      "revision_id": null
+    }
+  ],
+  "records": [
+    {
+      "id": "proj_churn_model",
+      "kind": "project",
+      "data": {
+        "title": "이탈 예측 모델링",
+        "description": "가설과 근거를 함께 보존한다"
+      }
+    },
+    {
+      "id": "cap_model_note",
+      "kind": "capture",
+      "data": {
+        "project_id": "proj_churn_model",
+        "content": "이탈 예측에서 최근 7일 활동 피처를 넣으면 재현율이 오른다.",
+        "content_digest": null,
+        "media_type": "text/plain",
+        "source_kind": "note",
+        "source_ref": "example://modeling-note",
+        "occurred_at": "2026-02-01T10:00:00+09:00"
+      }
+    },
+    {
+      "id": "ent_research_schema",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "schema",
+        "project_id": "proj_churn_model",
+        "title": "이탈 예측 연구",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_h0",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "idea",
+        "project_id": "proj_churn_model",
+        "title": "가설 H0: 최근 활동 피처",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_h1",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "idea",
+        "project_id": "proj_churn_model",
+        "title": "가설 H1: 최근 3일 활동 피처",
+        "tags": [],
+        "derived_from": [
+          "ent_h0"
+        ],
+        "lineage_kind": "semantic_edit"
+      }
+    },
+    {
+      "id": "rev_h0",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_h0",
+        "body": "이탈 예측에서 최근 7일 활동 피처를 넣으면 재현율이 오른다.",
+        "tags": [],
+        "slots": [],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": "cap_model_note",
+          "model": null,
+          "skill": null,
+          "claim_mode": "extracted",
+          "source_anchor": {
+            "capture_id": "cap_model_note",
+            "start": 0,
+            "end": 34
+          }
+        }
+      }
+    },
+    {
+      "id": "rev_h1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_h1",
+        "body": "이탈 예측에서 최근 3일 활동 피처를 넣으면 재현율이 오른다.",
+        "tags": [],
+        "slots": [],
+        "change_kind": "semantic",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_research_schema_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_research_schema",
+        "body": "연구 스키마",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "hypothesis",
+            "revision_id": "rev_h1",
+            "roles": [
+              "research"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_root_model_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "proj_churn_model",
+        "body": "모델링 프로젝트 루트",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "research_schema",
+            "revision_id": "rev_research_schema_1",
+            "roles": [
+              "research"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "art_run_2026_02",
+      "kind": "artifact",
+      "data": {
+        "uri": "file:///runs/2026-02-10/churn-eval.json",
+        "digest": "sha256:675323e1d8f9d4f435a990171d2833396903d81ae36200aa182d3445a2c1f365",
+        "digest_alg": "sha256",
+        "size_bytes": 20480,
+        "media_type": "application/json",
+        "included_in_export": false,
+        "note": "바이트는 별도 보관 필요"
+      }
+    },
+    {
+      "id": "obs_recall_fail",
+      "kind": "observation",
+      "data": {
+        "project_id": "proj_churn_model",
+        "target_revision_id": "rev_h1",
+        "metric": "recall_at_10",
+        "value": 0.41,
+        "unit": "ratio",
+        "status": "observed",
+        "occurred_at": "2026-02-10T18:00:00+09:00",
+        "method": "5-fold, 2026-01 스냅샷",
+        "environment": {
+          "code_ref": "git:4b1c9de",
+          "data_version": "churn-2026-01",
+          "model_version": "lgbm-0.4",
+          "config_digest": null,
+          "runtime": "python 3.12 / lightgbm 4.5"
+        },
+        "artifact_ids": [
+          "art_run_2026_02"
+        ],
+        "capture_id": null,
+        "actor": "human:example",
+        "note": "목표 미달"
+      }
+    },
+    {
+      "id": "obs_train_failed",
+      "kind": "observation",
+      "data": {
+        "project_id": "proj_churn_model",
+        "target_revision_id": "rev_h1",
+        "metric": "recall_at_10",
+        "value": null,
+        "unit": null,
+        "status": "failed",
+        "occurred_at": "2026-02-09T21:00:00+09:00",
+        "method": "학습 중 OOM",
+        "environment": {
+          "code_ref": "git:4b1c9de",
+          "data_version": "churn-2026-01",
+          "model_version": null,
+          "config_digest": null,
+          "runtime": null
+        },
+        "artifact_ids": [],
+        "capture_id": null,
+        "actor": "human:example",
+        "note": "무효 실행, 관측값 없음"
+      }
+    },
+    {
+      "id": "goal_recall_v1",
+      "kind": "goal",
+      "data": {
+        "project_id": "proj_churn_model",
+        "scope": {
+          "root_revision_id": "rev_root_model_1",
+          "slot_path": [
+            "research_schema",
+            "hypothesis"
+          ],
+          "target_revision_id": "rev_h1"
+        },
+        "statement": "최근 활동 피처가 재현율을 목표치까지 끌어올린다",
+        "criteria": [
+          {
+            "criterion_id": "c_recall",
+            "kind": "quantitative",
+            "statement": "recall@10",
+            "metric": "recall_at_10",
+            "comparator": "gte",
+            "threshold": 0.5,
+            "unit": "ratio",
+            "required": true
+          },
+          {
+            "criterion_id": "c_reproducible",
+            "kind": "qualitative",
+            "statement": "동일 환경에서 재현 가능하다",
+            "metric": null,
+            "comparator": null,
+            "threshold": null,
+            "unit": null,
+            "required": false
+          }
+        ],
+        "origin": "official",
+        "actor": "human:example"
+      }
+    },
+    {
+      "id": "bl_recall_v1",
+      "kind": "baseline",
+      "data": {
+        "goal_id": "goal_recall_v1",
+        "criterion_ids": [
+          "c_recall",
+          "c_reproducible"
+        ],
+        "constraints": [
+          "2026-01 데이터 스냅샷",
+          "단일 GPU"
+        ],
+        "effective_from": "2026-02-01T00:00:00+09:00",
+        "supersedes": null,
+        "actor": "human:example",
+        "reason": "1차 기준선"
+      }
+    },
+    {
+      "id": "asm_recall_v1",
+      "kind": "assessment",
+      "data": {
+        "root_revision_id": "rev_root_model_1",
+        "slot_path": [
+          "research_schema",
+          "hypothesis"
+        ],
+        "target_revision_id": "rev_h1",
+        "baseline_id": "bl_recall_v1",
+        "evidence_cutoff_seq": 1000,
+        "evidence_cutoff_at": "2026-02-11T00:00:00+09:00",
+        "evaluator": "human:example",
+        "rubric_version": "rubric-v1",
+        "origin": "official",
+        "status": "unmet",
+        "criteria_results": [
+          {
+            "criterion_id": "c_recall",
+            "status": "unmet",
+            "observed_value": 0.41,
+            "note": "0.5 미달"
+          },
+          {
+            "criterion_id": "c_reproducible",
+            "status": "met",
+            "observed_value": null,
+            "note": "환경 고정 확인"
+          }
+        ],
+        "evidence_observation_ids": [
+          "obs_recall_fail"
+        ],
+        "note": "1차 판단 근거 cutoff는 평가자가 '어디까지 알고 판단했는가'를 고정하는 값이다. 실제 클라이언트는 /api/state의 현재 seq를 읽어 넣는다. 예제는 어느 순서로 적용해도 돌아가도록 넉넉한 상한을 쓴다."
+      }
+    },
+    {
+      "id": "lnk_h1_derived",
+      "kind": "link",
+      "data": {
+        "link_type": "derived",
+        "from_id": "ent_h1",
+        "to_id": "ent_h0",
+        "note": "관측 창을 7일에서 3일로 좁힌 파생",
+        "actor": "human:example",
+        "impact": null,
+        "similarity": null
+      }
+    }
+  ],
+  "root_change": {
+    "project_id": "proj_churn_model",
+    "stage": "working",
+    "after_revision_id": "rev_root_model_1",
+    "reason": "연구 스키마 최초 구성",
+    "meaningful": true,
+    "decision": {
+      "before": "루트 없음",
+      "after": "연구 스키마 최초 구성",
+      "rationale": "가설을 교체 가능한 원자로 분리한다"
+    }
+  },
+  "publish": null
+}

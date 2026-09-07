@@ -1,0 +1,91 @@
+{
+  "protocol_version": 1,
+  "idempotency_key": "example-06-invalid-cycle",
+  "actor": "human:example",
+  "reason": "거절되어야 하는 순환 구성. head를 옮기지 않으므로 expected_heads는 비어 있다. 422 validation_failed / cycle_detected",
+  "expected_heads": [],
+  "records": [
+    {
+      "id": "ent_cycle_a",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "core",
+        "project_id": "proj_login_example",
+        "title": "순환 A",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_cycle_b",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "core",
+        "project_id": "proj_login_example",
+        "title": "순환 B",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "rev_cycle_a",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_cycle_a",
+        "body": "A는 B를 포함한다",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "b",
+            "revision_id": "rev_cycle_b",
+            "roles": []
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_cycle_b",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_cycle_b",
+        "body": "B는 A를 포함한다",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "a",
+            "revision_id": "rev_cycle_a",
+            "roles": []
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    }
+  ],
+  "root_change": null,
+  "publish": null
+}

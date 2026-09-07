@@ -51,12 +51,33 @@ make docker-check
 
 acceptance는 실행 중인 DB에 고유 ID를 가진 테스트 Project를 추가합니다. 사용자 데이터 초기화/삭제는 하지 않습니다. 독립적인 검증 DB에는 `make docker-check`를 사용하세요. Python 3의 표준 라이브러리는 **검증/클라이언트 도구**에만 사용하며 이미지 DB 런타임에는 필요하지 않습니다.
 
-API만 별도로 배포하려면 `docker build --target api -t idea-db-api:local .`로 빌드하고 외부 Neo4j의 `NEO4J_URI`와 인증을 설정합니다. 기본 standalone 이미지와 API-only 이미지는 동일한 Rust 코드를 사용합니다.
+API만 별도로 배포하려면 `docker build --target api -t idea-db-api:local .`로 빌드하고 idea_db 전용 Neo4j 데이터베이스의 `NEO4J_URI`와 인증을 설정합니다. 기본 standalone 이미지와 API-only 이미지는 동일한 Rust 코드를 사용합니다.
 
 ## 구현 선택과 한계
 
 Neo4j의 개별 노드와 타입 관계가 권위 저장소이며 응용 ID를 사용합니다. 5.26 LTS에 고정된 트랜잭션 API를 사용합니다. 해당 HTTP API는 [5.26에서 deprecated](https://neo4j.com/docs/http-api/current/transactions/)되었으므로 Neo4j 메이저 업그레이드 전에 드라이버 변경과 수용 검증이 필요합니다.
 
-초기 정확성 검증을 위해 쓰기를 직렬화하고 탐색/입력 크기를 제한합니다. 소규모 검증 결과를 팀 규모 성능 보장으로 해석하지 않습니다. 상세 구현 한계와 실행한 검증은 [docs/validation.md](docs/validation.md)에 기록합니다.
+초기 정확성 검증을 위해 읽기와 쓰기를 직렬화하고 전체 네임스페이스를 5,000개 레코드로 제한합니다. 소규모 검증 결과를 팀 규모 성능 보장으로 해석하지 않습니다. 상세 구현 한계와 실행한 검증은 [docs/validation.md](docs/validation.md)에 기록합니다.
 
 Neo4j Community는 공식 [Docker 이미지](https://hub.docker.com/_/neo4j/)를 기반으로 하며, 해당 구성 요소의 라이선스와 공지는 원본 이미지/배포물에 포함됩니다. 응용 DB 엔진 자체를 Rust로 다시 구현하는 작업은 이번 범위에 포함하지 않습니다.
+
+## 로컬 AI와 수동 입력
+
+브라우저에서 프로젝트를 만든 뒤 원문을 캡처하고, 구성에서 부모를 선택하여 하위 Schema/Core/Idea를 추가합니다. 복잡한 목표·관측·관계 입력은 목표 추가 버튼의 JSON 패키지 편집기로 검토합니다. 요청 형식은 `docs/api.md`, 재현 예시는 `examples/`에 있습니다.
+
+```sh
+python3 scripts/idea-db-client.py --url http://127.0.0.1:8080 validate package.json
+python3 scripts/idea-db-client.py --url http://127.0.0.1:8080 apply package.json
+python3 scripts/idea-db-client.py export --output backup.json
+# 비어 있는 별도 DB에만 복원할 수 있습니다.
+python3 scripts/idea-db-client.py --url http://127.0.0.1:8081 import backup.json
+```
+
+로컬 모델은 설치된 실행 명령을 직접 지정합니다. 다음의 모델 이름은 보유한 모델로 바꾸세요. 모델 설치나 다운로드는 자동 수행하지 않습니다.
+
+```sh
+python3 scripts/idea-db-client.py draft --context context.json \
+  --command-json '["ollama","run","your-model"]' --output draft.json
+```
+
+이 명령은 스킬·API 계약·선택한 문맥을 표준 입력으로 보내고 JSON 초안만 저장합니다. 검증과 적용은 별도 명령이며, DB는 모델이나 제공자 키를 요구하지 않습니다. `context.json`에는 필요한 원문과 프로젝트 상태만 넣습니다. 인증을 켰다면 클라이언트 및 수용 테스트에 `IDEA_DB_TOKEN` 환경변수를 전달하세요.

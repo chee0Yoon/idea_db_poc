@@ -33,10 +33,10 @@ def request(base, method, route, payload=None):
         raise SystemExit("API connection failed: " + str(exc.reason)) from exc
 
 
-def read_json(path):
+def read_json(path, max_bytes=2 * 1024 * 1024):
     text = sys.stdin.read() if path == "-" else Path(path).read_text()
-    if len(text.encode()) > 2 * 1024 * 1024:
-        raise SystemExit("Input exceeds 2 MiB")
+    if len(text.encode()) > max_bytes:
+        raise SystemExit("Input exceeds %d MiB" % (max_bytes // (1024 * 1024)))
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
@@ -116,7 +116,7 @@ def main():
             "apply": "/api/packages/apply", "replace": "/api/occurrences/replace",
             "search": "/api/search", "import": "/api/import",
         }
-        payload = read_json(args.file)
+        payload = read_json(args.file, 64 * 1024 * 1024 if args.command == "import" else 2 * 1024 * 1024)
         if args.command == "import":
             payload = {"document": payload}
         result = request(args.url, "POST", routes[args.command], payload)

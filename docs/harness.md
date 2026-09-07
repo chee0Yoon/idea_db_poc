@@ -16,8 +16,9 @@ Main이 요구사항, API 계약, 파일 소유권, 의존 관계와 통합 수�
 | 작업 | 담당 | 소유 파일 | 전달물 |
 |---|---|---|---|
 | 설계·배포·통합·문서 | Main | plan, AGENTS, Docker/Compose, scripts, README, CI | 실행 이미지, 검증 보고서 |
-| DB 도메인/API | Opus 5 / ACP | Cargo, src, docs/api.md, examples | 계약, 구현, 단위 검증 |
-| 2D GUI | Terra / native | static | API에 연결된 화면 |
+| 저장/API/복구 | Opus 5 / ACP | Cargo, src/store·mutation·backup·http·neo4j, examples | 계약, 구현, 단위 검증 |
+| 도메인 불변 조건 | Main | src/model·validate·graph·util·limits | 모델 통합과 회귀 검증 |
+| 조회/2D GUI | Terra / native | src/query.rs, static | 실제 조회 투영과 화면 |
 | 독립 수용 시나리오 | Sol / native | tests/acceptance.py | 실DB 시나리오, 논리 결함 목록 |
 
 작업자는 별도 모델 서버나 상시 백그라운드 자동화를 설치하지 않는다. 이 저장소의 재현 가능한 하네스는 문서 계약·검증 명령·CI로 구성한다. 실행 시 외부 모델 비용이 자동 발생하지 않는다. 로컬 AI 입력 방법은 `skills/idea-db-input/SKILL.md`에 정의한다.

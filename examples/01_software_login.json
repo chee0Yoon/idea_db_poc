@@ -1,0 +1,403 @@
+{
+  "protocol_version": 1,
+  "idempotency_key": "example-01-software-login",
+  "actor": "human:example",
+  "reason": "로그인 정책을 FE/BE가 재사용하는 6단계 구성",
+  "expected_heads": [
+    {
+      "project_id": "proj_login_example",
+      "stage": "working",
+      "revision_id": null
+    },
+    {
+      "project_id": "proj_login_example",
+      "stage": "official",
+      "revision_id": null
+    }
+  ],
+  "records": [
+    {
+      "id": "proj_login_example",
+      "kind": "project",
+      "data": {
+        "title": "로그인 개편",
+        "description": "FE/BE가 하나의 잠금 정책을 재사용한다"
+      }
+    },
+    {
+      "id": "ent_login_schema",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "schema",
+        "project_id": "proj_login_example",
+        "title": "로그인 스키마",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_backend",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "core",
+        "project_id": "proj_login_example",
+        "title": "백엔드",
+        "tags": [
+          "be"
+        ],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_auth",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "core",
+        "project_id": "proj_login_example",
+        "title": "인증",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_session",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "core",
+        "project_id": "proj_login_example",
+        "title": "세션",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_policy_core",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "core",
+        "project_id": "proj_login_example",
+        "title": "정책 묶음",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_frontend",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "core",
+        "project_id": "proj_login_example",
+        "title": "프론트엔드",
+        "tags": [
+          "fe"
+        ],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_lockout",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "idea",
+        "project_id": "proj_login_example",
+        "title": "5회 실패 시 30분 잠금",
+        "tags": [
+          "policy",
+          "auth"
+        ],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "rev_lockout_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_lockout",
+        "body": "연속 5회 인증 실패 시 계정을 30분 잠근다.",
+        "tags": [],
+        "slots": [],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_policy_core_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_policy_core",
+        "body": "잠금 정책 묶음",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "shared_policy",
+            "revision_id": "rev_lockout_1",
+            "roles": [
+              "be"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_session_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_session",
+        "body": "세션 관리",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "policy",
+            "revision_id": "rev_policy_core_1",
+            "roles": [
+              "be"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_auth_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_auth",
+        "body": "인증 흐름",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "session",
+            "revision_id": "rev_session_1",
+            "roles": [
+              "be"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_backend_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_backend",
+        "body": "백엔드 구현",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "auth",
+            "revision_id": "rev_auth_1",
+            "roles": [
+              "be"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_frontend_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_frontend",
+        "body": "프론트엔드 구현",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "shared_policy",
+            "revision_id": "rev_lockout_1",
+            "roles": [
+              "fe"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_login_schema_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_login_schema",
+        "body": "로그인 스키마",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "backend",
+            "revision_id": "rev_backend_1",
+            "roles": [
+              "be"
+            ]
+          },
+          {
+            "slot_id": "frontend",
+            "revision_id": "rev_frontend_1",
+            "roles": [
+              "fe"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_root_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "proj_login_example",
+        "body": "로그인 프로젝트 루트",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "login_schema",
+            "revision_id": "rev_login_schema_1",
+            "roles": [
+              "software"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "lnk_fe_applies",
+      "kind": "link",
+      "data": {
+        "link_type": "applies",
+        "from_id": "ent_frontend",
+        "to_id": "ent_lockout",
+        "note": "FE 구현이 같은 정책을 적용한다",
+        "actor": "human:example",
+        "impact": null,
+        "similarity": null
+      }
+    },
+    {
+      "id": "lnk_be_implements",
+      "kind": "link",
+      "data": {
+        "link_type": "implements",
+        "from_id": "ent_backend",
+        "to_id": "ent_lockout",
+        "note": "BE 구현이 정책을 구현한다",
+        "actor": "human:example",
+        "impact": null,
+        "similarity": null
+      }
+    }
+  ],
+  "root_change": {
+    "project_id": "proj_login_example",
+    "stage": "working",
+    "after_revision_id": "rev_root_1",
+    "reason": "로그인 스키마 최초 구성",
+    "meaningful": true,
+    "decision": {
+      "before": "루트 없음",
+      "after": "로그인 스키마 최초 구성",
+      "rationale": "정책을 재사용 가능한 원자로 분리하기 위해"
+    }
+  },
+  "publish": {
+    "project_id": "proj_login_example",
+    "root_revision_id": "rev_root_1",
+    "label": "login-v1",
+    "published_at": "2026-01-01T09:00:00+09:00",
+    "notes": "1차 공식 구성"
+  }
+}

@@ -31,6 +31,7 @@ RUN chmod 755 /opt/idea-db/entrypoint.sh
 ENV IDEA_DB_BIND=0.0.0.0:8080 STATIC_DIR=/opt/idea-db/static \
     NEO4J_URI=http://127.0.0.1:7474 NEO4J_USER=neo4j \
     NEO4J_server_default__listen__address=127.0.0.1 \
+    NEO4J_dbms_usage__report_enabled=false \
     NEO4J_server_memory_heap_initial__size=256m \
     NEO4J_server_memory_heap_max__size=512m \
     NEO4J_server_memory_pagecache_size=256m

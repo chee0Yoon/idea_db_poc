@@ -1,0 +1,261 @@
+{
+  "protocol_version": 1,
+  "idempotency_key": "example-05-qualitative-planning",
+  "actor": "human:example",
+  "reason": "비개발 기획: 정성 기준, 누락 목표, 캡처에서 만든 후보",
+  "expected_heads": [
+    {
+      "project_id": "proj_campaign_plan",
+      "stage": "working",
+      "revision_id": null
+    }
+  ],
+  "records": [
+    {
+      "id": "proj_campaign_plan",
+      "kind": "project",
+      "data": {
+        "title": "가을 캠페인 기획",
+        "description": "AI 없이 수동으로 입력한다"
+      }
+    },
+    {
+      "id": "cap_campaign_kickoff",
+      "kind": "capture",
+      "data": {
+        "project_id": "proj_campaign_plan",
+        "content": "가을 캠페인은 신규 가입자의 첫 주 이탈을 줄이는 데 집중한다.",
+        "content_digest": null,
+        "media_type": "text/plain",
+        "source_kind": "note",
+        "source_ref": "example://kickoff",
+        "occurred_at": "2026-04-01T14:00:00+09:00"
+      }
+    },
+    {
+      "id": "ent_campaign_schema",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "schema",
+        "project_id": "proj_campaign_plan",
+        "title": "캠페인 기획",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_brief",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "idea",
+        "project_id": "proj_campaign_plan",
+        "title": "캠페인 목적",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "ent_owner",
+      "kind": "entity",
+      "data": {
+        "entity_kind": "idea",
+        "project_id": "proj_campaign_plan",
+        "title": "담당자와 승인 경로",
+        "tags": [],
+        "derived_from": [],
+        "lineage_kind": "none"
+      }
+    },
+    {
+      "id": "rev_brief",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_brief",
+        "body": "가을 캠페인은 신규 가입자의 첫 주 이탈을 줄이는 데 집중한다.",
+        "tags": [],
+        "slots": [],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": "cap_campaign_kickoff",
+          "model": null,
+          "skill": null,
+          "claim_mode": "extracted",
+          "source_anchor": {
+            "capture_id": "cap_campaign_kickoff",
+            "start": 0,
+            "end": 35
+          }
+        }
+      }
+    },
+    {
+      "id": "rev_owner",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_owner",
+        "body": "캠페인 승인은 그로스 리드가 하고 실행은 콘텐츠 팀이 맡는다.",
+        "tags": [],
+        "slots": [],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_campaign_schema_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "ent_campaign_schema",
+        "body": "캠페인 기획 구성",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "brief",
+            "revision_id": "rev_brief",
+            "roles": [
+              "planning"
+            ]
+          },
+          {
+            "slot_id": "owner",
+            "revision_id": "rev_owner",
+            "roles": [
+              "planning"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "rev_root_plan_1",
+      "kind": "revision",
+      "data": {
+        "entity_id": "proj_campaign_plan",
+        "body": "기획 프로젝트 루트",
+        "tags": [],
+        "slots": [
+          {
+            "slot_id": "campaign_schema",
+            "revision_id": "rev_campaign_schema_1",
+            "roles": [
+              "planning"
+            ]
+          }
+        ],
+        "change_kind": "initial",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    {
+      "id": "cand_approval_criteria",
+      "kind": "candidate",
+      "data": {
+        "project_id": "proj_campaign_plan",
+        "capture_id": "cap_campaign_kickoff",
+        "proposed_kind": "idea",
+        "title": "승인 기준을 명시하자",
+        "body": "가을 캠페인은 신규 가입자의 첫 주 이탈을 줄이는 데 집중한다.",
+        "origin": "human",
+        "model": null,
+        "skill": null,
+        "claim_mode": "extracted",
+        "source_anchor": {
+          "capture_id": "cap_campaign_kickoff",
+          "start": 0,
+          "end": 35
+        },
+        "status": "pending"
+      }
+    },
+    {
+      "id": "goal_first_week",
+      "kind": "goal",
+      "data": {
+        "project_id": "proj_campaign_plan",
+        "scope": {
+          "root_revision_id": "rev_root_plan_1",
+          "slot_path": [
+            "campaign_schema",
+            "brief"
+          ],
+          "target_revision_id": "rev_brief"
+        },
+        "statement": "첫 주 이탈을 줄이면서 캠페인 톤이 브랜드와 어긋나지 않는다",
+        "criteria": [
+          {
+            "criterion_id": "c_tone",
+            "kind": "qualitative",
+            "statement": "브랜드 리뷰에서 톤 이슈가 제기되지 않는다",
+            "metric": null,
+            "comparator": null,
+            "threshold": null,
+            "unit": null,
+            "required": true
+          },
+          {
+            "criterion_id": "c_first_week",
+            "kind": "quantitative",
+            "statement": "첫 주 이탈률",
+            "metric": "first_week_churn",
+            "comparator": "lte",
+            "threshold": 0.18,
+            "unit": "ratio",
+            "required": true
+          }
+        ],
+        "origin": "official",
+        "actor": "human:example"
+      }
+    }
+  ],
+  "root_change": {
+    "project_id": "proj_campaign_plan",
+    "stage": "working",
+    "after_revision_id": "rev_root_plan_1",
+    "reason": "캠페인 기획 최초 구성",
+    "meaningful": true,
+    "decision": {
+      "before": "루트 없음",
+      "after": "캠페인 기획 최초 구성",
+      "rationale": "목적과 담당자를 각각 교체 가능한 원자로 둔다"
+    }
+  },
+  "publish": null
+}

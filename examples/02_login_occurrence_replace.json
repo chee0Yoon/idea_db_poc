@@ -1,0 +1,66 @@
+{
+  "protocol_version": 1,
+  "idempotency_key": "example-02-replace-backend-occurrence",
+  "actor": "human:example",
+  "reason": "BE 경로의 잠금 시간만 조정한다",
+  "project_id": "proj_login_example",
+  "stage": "working",
+  "expected_root_revision_id": "rev_root_1",
+  "slot_path": [
+    "login_schema",
+    "backend",
+    "auth",
+    "session",
+    "policy",
+    "shared_policy"
+  ],
+  "replacement": {
+    "mode": "new_revision",
+    "new_revision": {
+      "id": "rev_lockout_be_10m",
+      "data": {
+        "entity_id": "ent_lockout_be_10m",
+        "body": "백엔드에서는 연속 5회 인증 실패 시 계정을 10분 잠근다.",
+        "tags": [],
+        "slots": [],
+        "change_kind": "semantic",
+        "correction_of": null,
+        "correction_reason": null,
+        "previous_revision_id": null,
+        "source": {
+          "origin": "human",
+          "capture_id": null,
+          "model": null,
+          "skill": null,
+          "claim_mode": "inferred",
+          "source_anchor": null
+        }
+      }
+    },
+    "new_records": [
+      {
+        "id": "ent_lockout_be_10m",
+        "kind": "entity",
+        "data": {
+          "entity_kind": "idea",
+          "project_id": "proj_login_example",
+          "title": "BE 전용 10분 잠금",
+          "tags": [
+            "policy"
+          ],
+          "derived_from": [
+            "ent_lockout"
+          ],
+          "lineage_kind": "semantic_edit"
+        }
+      }
+    ],
+    "target_revision_id": null
+  },
+  "root_change_reason": "BE 잠금 시간을 10분으로 변경",
+  "decision": {
+    "before": "FE/BE 공통 30분 잠금",
+    "after": "BE만 10분, FE는 30분 유지",
+    "rationale": "CS 문의가 늘었고 BE 탈취율에는 여유가 있다"
+  }
+}

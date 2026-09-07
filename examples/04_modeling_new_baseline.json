@@ -1,0 +1,120 @@
+{
+  "protocol_version": 1,
+  "idempotency_key": "example-04-modeling-new-baseline",
+  "actor": "human:example",
+  "reason": "기준선을 강화하고 새 평가를 남긴다. 이전 평가는 그대로 유지된다",
+  "expected_heads": [
+    {
+      "project_id": "proj_churn_model",
+      "stage": "working",
+      "revision_id": "rev_root_model_1"
+    }
+  ],
+  "records": [
+    {
+      "id": "goal_recall_v2",
+      "kind": "goal",
+      "data": {
+        "project_id": "proj_churn_model",
+        "scope": {
+          "root_revision_id": "rev_root_model_1",
+          "slot_path": [
+            "research_schema",
+            "hypothesis"
+          ],
+          "target_revision_id": "rev_h1"
+        },
+        "statement": "재현율 기준을 0.6으로 올린다",
+        "criteria": [
+          {
+            "criterion_id": "c_recall",
+            "kind": "quantitative",
+            "statement": "recall@10",
+            "metric": "recall_at_10",
+            "comparator": "gte",
+            "threshold": 0.6,
+            "unit": "ratio",
+            "required": true
+          }
+        ],
+        "origin": "official",
+        "actor": "human:example"
+      }
+    },
+    {
+      "id": "bl_recall_v2",
+      "kind": "baseline",
+      "data": {
+        "goal_id": "goal_recall_v2",
+        "criterion_ids": [
+          "c_recall"
+        ],
+        "constraints": [
+          "2026-03 데이터 스냅샷"
+        ],
+        "effective_from": "2026-03-01T00:00:00+09:00",
+        "supersedes": "bl_recall_v1",
+        "actor": "human:example",
+        "reason": "목표 상향"
+      }
+    },
+    {
+      "id": "obs_recall_v2",
+      "kind": "observation",
+      "data": {
+        "project_id": "proj_churn_model",
+        "target_revision_id": "rev_h1",
+        "metric": "recall_at_10",
+        "value": 0.63,
+        "unit": "ratio",
+        "status": "observed",
+        "occurred_at": "2026-03-05T18:00:00+09:00",
+        "method": "5-fold, 2026-03 스냅샷",
+        "environment": {
+          "code_ref": "git:77aa102",
+          "data_version": "churn-2026-03",
+          "model_version": "lgbm-0.6",
+          "config_digest": null,
+          "runtime": "python 3.12 / lightgbm 4.5"
+        },
+        "artifact_ids": [],
+        "capture_id": null,
+        "actor": "human:example",
+        "note": ""
+      }
+    },
+    {
+      "id": "asm_recall_v2",
+      "kind": "assessment",
+      "data": {
+        "root_revision_id": "rev_root_model_1",
+        "slot_path": [
+          "research_schema",
+          "hypothesis"
+        ],
+        "target_revision_id": "rev_h1",
+        "baseline_id": "bl_recall_v2",
+        "evidence_cutoff_seq": 1000,
+        "evidence_cutoff_at": "2026-03-06T00:00:00+09:00",
+        "evaluator": "human:example",
+        "rubric_version": "rubric-v1",
+        "origin": "official",
+        "status": "met",
+        "criteria_results": [
+          {
+            "criterion_id": "c_recall",
+            "status": "met",
+            "observed_value": 0.63,
+            "note": "0.6 충족"
+          }
+        ],
+        "evidence_observation_ids": [
+          "obs_recall_v2"
+        ],
+        "note": "새 기준선에 대한 새 판단. asm_recall_v1은 그대로 남는다 근거 cutoff는 평가자가 '어디까지 알고 판단했는가'를 고정하는 값이다. 실제 클라이언트는 /api/state의 현재 seq를 읽어 넣는다. 예제는 어느 순서로 적용해도 돌아가도록 넉넉한 상한을 쓴다."
+      }
+    }
+  ],
+  "root_change": null,
+  "publish": null
+}
