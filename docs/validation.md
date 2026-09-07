@@ -143,15 +143,41 @@ Y는 최소 재귀 깊이, Z는 Schema Entity 레이어다. 공유 위치 선택
 
 [r5 브라우저 결과](../test-results/dashboard-3d-r5-20260907/report.json)는 위 항목과
 1720px/1280px 레이아웃까지 총 11개 검사를 통과했다. 목표 목록은 별도 스크롤로
-제한하여 전체 활동 이력을 가리지 않도록 했다. 최종 설치 후 같은 검사를 재실행한다.
+제한하여 전체 활동 이력을 가리지 않도록 했다. 메인 `8080`에 설치한 뒤 [최종 실제 UI 검사](../test-results/dashboard-final-r2-20260907/report.json)도 11개 모두 통과했다. 데스크톱·노트북 스크린샷을 직접 확인했고, JavaScript 오류와 대시보드 쓰기 요청은 0건이다.
 
 최종 재실행 중 발견한 검증 하네스 오류도 보존했다. 실제 벡터의 Rust/Python 숫자
 직렬화 차이를 HTTP 숫자 토큰 보존으로 해결했으며 digest 단언은 유지했다. macOS
 Bash 3의 빈 배열 nounset 처리도 수정했다. 실행 중 스크립트 수정으로 중단된 r5
 수명주기 로그는 실패 기록으로 남기고, 파일을 고정한 뒤 r6 전체 검증을 다시 실행하여 통과했다.
 
-최종 이미지는 `idea-db:mcp-check`의 r6 빌드다. 성공·실패 호스트 실행 로그와
+최종 실행 이미지는 `idea-db:dashboard-check` r3 빌드를 `idea-db:local`로 태그한 이미지다. 코드 기준은 `7b70ce7`이다. 성공·실패 호스트 실행 로그와
 검증 컨테이너의 stdout/stderr 및 전체 `/logs`를 `test-results/`에 보존했다.
 MCP 전체 DB·영수증 내보내기 기본 확대는 자동 승인 검토가 민감 데이터 노출
 증가로 거절하여 제외했다. MCP export는 프로젝트 지정과 영수증 기본 제외를
 유지하며, 기존 전체 복구용 read-only HTTP export 계약은 변경하지 않았다.
+
+
+### 메인 UI에서 발견한 조회 취소 결함과 최종 회귀
+
+첫 메인 UI 검사에서는 빠른 화면 전환 뒤 `/api/export`가 지연되어 실패했다.
+실제 Neo4j에서 취소된 HTTP 요청의 트랜잭션이 전역 잠금을 보유하고, 다른 조회들이
+4분 이상 대기하는 것을 확인했다. [실패 보고서](../test-results/dashboard-final-20260907/report.json)와
+컨테이너·Neo4j 로그를 삭제하지 않고 보존했다.
+
+열린 트랜잭션의 Drop은 비동기 롤백을 요청한다. begin과 commit의 HTTP 교환은 호출자
+취소에도 완료되도록 보호하며, commit 결과가 불명확할 때 쓰기를 자동 재실행하지 않는다.
+롤백 응답의 정확한 오류 코드를 확인하고 ConcurrentRequestAccess만 제한적으로 재시도한다.
+정리 요청도 네트워크 장애나 프로세스 종료 시 실패할 수 있어 서버 타임아웃은 최종 안전장치다.
+
+- `make check`: Rust 121개 통과, 실제 Neo4j 전용 테스트 1개는 기본 실행에서 제외.
+- 제외된 테스트를 격리 Neo4j에서 별도로 실행: 잠금 보유 중 취소와 잠금 대기 중 취소 모두
+  다음 조회가 5초 이내 완료되고 도메인 sequence가 유지됨을 확인.
+- 최종 r7 [MCP intake](../test-results/dashboard-acceptance-r7-20260907/mcp-ingest/mcp-ingest-report.json):
+  12개 통과. 같은 실행의 실DB 수용 13개와 재시작·복원·프로세스 실패·종료 검증도 통과.
+- 최종 r7 [30단계 수명주기](../test-results/dashboard-lifecycle-r7-20260907/report.json):
+  30단계 및 재시작·복원 후 재조회 통과.
+- [설치 후 전체 기록 대조](../test-results/user-preservation-20260907/final-cancellation-fix-verification.json):
+  사용자 5개와 시나리오 403개, 총 408개 기록의 전체 content와 digest 일치.
+
+로컬 포트가 금지된 sandbox에서 처음 실행한 테스트의 PermissionDenied 실패 로그도
+보존했다. 로컬 포트 사용 권한이 있는 실행에서 포맷·린트·전체 테스트를 다시 통과했다.
