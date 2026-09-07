@@ -16,3 +16,52 @@ dialog { padding:0; border:0; background:transparent; max-width:min(620px,calc(1
 @media (max-width:560px) { .topbar { padding:.7rem; }.brand { font-size:1rem; }.scope-controls { display:grid; grid-template-columns:1fr 1fr; }.scope-controls select,.scope-controls input { max-width:none; }.record-pane { padding:1.25rem 1rem; }.record-actions .button { flex:1; }.dialog-card { min-width:0; width:calc(100vw - 2rem); }.empty-state { padding:1.3rem; }.empty-state .button-row { flex-direction:column; }.empty-state .button { width:100%; } }
 
 .check-row input[type="checkbox"] { width:1rem; flex:0 0 1rem; margin:0; }
+
+/* Human-facing summaries keep machine identifiers in the expandable detail. */
+.current-selection { margin:0 .75rem .8rem; padding:.45rem .55rem; border-left:3px solid var(--accent); background:rgba(220,234,230,.52); color:var(--ink); font-size:.76rem; line-height:1.45; }
+.record-time { margin:0; font-size:.82rem; }
+.record-meta { margin:.4rem 0 0; font-size:.76rem; overflow-wrap:anywhere; }
+.technical-details { margin-top:.45rem; color:var(--muted); font-size:.76rem; }
+.technical-details summary { cursor:pointer; width:max-content; }
+.version-diff { border:1px solid var(--line); padding:.85rem; border-radius:7px; background:rgba(255,255,255,.28); }
+.diff-copy { display:grid; grid-template-columns:1fr 1fr; gap:.75rem; }
+.diff-copy div { min-width:0; }
+.diff-copy h4,.diff-slots h4 { margin:0 0 .35rem; color:var(--muted); font-size:.73rem; }
+.diff-copy p { margin:0; white-space:pre-wrap; font-family:Georgia,"Noto Serif KR",serif; font-size:.9rem; line-height:1.55; }
+.diff-slots { margin-top:.8rem; font-size:.8rem; }
+.diff-slots ul { margin:.25rem 0 0; padding-left:1.1rem; }
+.diff-status { margin:0; font-size:.82rem; line-height:1.5; }
+.diff-candidates { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.45rem; }
+.schema-goal { border-left:3px solid var(--accent); padding:.55rem .65rem; background:rgba(255,255,255,.25); }
+.schema-goal h3 { margin:0 0 .28rem; font-size:.9rem; }
+.goal-lane { margin-top:.55rem; padding-top:.5rem; border-top:1px solid var(--line); }
+.goal-lane h4 { margin:0 0 .25rem; font-size:.76rem; }
+.goal-lane p { margin:.2rem 0; font-size:.77rem; line-height:1.48; }
+.goal-numeric { margin:.35rem 0 0; padding-left:1rem; font-size:.76rem; }
+.goal-history { margin:.5rem 0 0; padding:.5rem 0 0; border-top:1px dashed var(--line); font-size:.75rem; }
+@media (max-width:560px) { .diff-copy { grid-template-columns:1fr; } }
+
+.goal-state { max-height:none; }
+.project-summary { margin-bottom:1.1rem; padding:1rem; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.42); box-shadow:var(--shadow); }
+.project-summary h2 { margin:.08rem 0 .35rem; font-family:Georgia,"Noto Serif KR",serif; font-size:clamp(1.25rem,2vw,1.7rem); }
+.project-summary-meta { margin:0; }
+.project-schema-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:.45rem; margin-top:.85rem; }
+.project-schema-row { border:1px solid var(--line); border-radius:6px; background:rgba(255,253,248,.72); padding:.48rem .55rem; color:var(--ink); text-align:left; }
+.project-schema-row:hover { background:var(--accent-soft); }.project-schema-row strong,.project-schema-row span { display:block; }.project-schema-row strong { font-size:.8rem; }.project-schema-row span { margin-top:.16rem; color:var(--muted); font-size:.7rem; line-height:1.4; }.goal-statement { margin:.2rem 0 .4rem !important; color:var(--ink); font-weight:650; }
+.project-summary-heading { display:flex; align-items:start; justify-content:space-between; gap:.8rem; }.project-summary-heading .button { flex:0 0 auto; white-space:nowrap; }
+#record-detail, #graph-workbench, #project-summary { scroll-margin-top:100px; }
+.diff-copy del { color:#842d29; background:#f9e1db; text-decoration:line-through; }
+.diff-copy ins { color:#22514a; background:#d9eee4; text-decoration:none; font-weight:650; }
+.goal-state { max-height:min(62vh,620px); overflow:auto; }
+@media (min-width:861px) {
+  .workspace { height:calc(100dvh - var(--topbar-height,80px)); min-height:0; overflow:hidden; }
+  .record-pane,.insights { height:100%; overflow:auto; }
+  .navigator { height:100%; overflow:hidden; }
+  .tree { flex:1; min-height:0; }
+}
+
+#record-detail { min-height:calc(100dvh - var(--topbar-height,80px) - 2rem); }
+#record-raw { white-space:pre-wrap; overflow-wrap:anywhere; max-height:24rem; overflow:auto; }
+
+.record-actions { flex-shrink:0; }
+.record-actions .button { white-space:nowrap; min-width:max-content; }

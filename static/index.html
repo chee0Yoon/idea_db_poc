@@ -28,10 +28,15 @@
       <aside class="pane navigator" aria-label="구성 탐색">
         <div class="pane-title"><div><p class="eyebrow">구성</p><h1>탐색기</h1></div><div class="view-toggle" role="group" aria-label="탐색 보기"><button id="view-2d" class="view-button" type="button" aria-pressed="true">2D</button><button id="view-3d" class="view-button" type="button" aria-pressed="false">3D</button></div></div>
         <p class="muted compact" id="tree-summary">서버 기록 시점은 기록된 시각이고, 근거 유효 시점은 관측이 실제 발생한 시각입니다. 입력값은 이 브라우저 시간대로 해석되어 UTC로 전송됩니다.</p>
+        <p class="current-selection" id="current-selection" aria-live="polite">현재 선택: 최신 구성을 불러오는 중입니다.</p>
         <nav id="tree" class="tree" aria-label="프로젝트 구성"></nav>
       </aside>
 
       <section class="pane record-pane" aria-label="선택한 기록">
+        <section id="project-summary" class="project-summary" aria-labelledby="project-summary-title">
+          <div class="project-summary-heading"><div><p class="eyebrow">현재 프로젝트</p><h2 id="project-summary-title">최신 구성을 불러오는 중입니다.</h2><p id="project-summary-meta" class="muted compact">변경과 목표 상태를 계산하는 중입니다.</p></div><button id="latest-button" class="button secondary" type="button" hidden>최신 구성으로</button></div>
+          <div id="project-schema-summary" class="project-schema-summary" aria-label="스키마별 목표 요약"></div>
+        </section>
         <section id="graph-workbench" class="graph-workbench" hidden aria-labelledby="graph-title">
           <div class="graph-heading"><div><p class="eyebrow">실제 이력</p><h2 id="graph-title">3D 구조와 기록</h2><p id="graph-summary" class="muted compact">프로젝트 export를 불러오는 중입니다.</p></div><div class="graph-actions"><label>스키마 층 <select id="graph-layer-filter" aria-label="3D 그래프 스키마 층"><option value="">모든 층</option></select></label><button id="graph-reset" class="button secondary" type="button">시점 초기화</button></div></div>
           <p class="muted compact">X: 서버 기록 시각 · Y: 재귀 구성 깊이 · Z: 비즈니스 스키마 층. 드래그로 회전하고 휠로 확대합니다. 노드를 누르면 사용 위치를 확인합니다.</p>
@@ -45,12 +50,13 @@
         </div>
         <article id="record-detail" hidden>
           <div class="record-heading">
-            <div><p class="eyebrow" id="record-kind">REVISION</p><h2 id="record-title">—</h2><p class="muted" id="record-meta">—</p></div>
+            <div><p class="eyebrow" id="record-kind">REVISION</p><h2 id="record-title">—</h2><p class="record-time muted" id="record-time">—</p><details class="technical-details"><summary>기술 정보</summary><p class="muted" id="record-meta">—</p><pre id="record-raw"></pre></details></div>
             <div class="record-actions"><button class="button secondary" id="export-button" type="button">내보내기</button></div>
           </div>
           <div id="record-badges" class="badge-row" aria-label="기록 상태"></div>
           <section class="content-section"><h3>내용</h3><div id="record-content" class="prose"></div></section>
           <section class="content-section"><h3>선택한 사용 위치</h3><dl id="occurrence-details" class="facts"></dl></section>
+          <section id="version-diff" class="content-section version-diff" hidden aria-live="polite"><h3>버전 비교</h3><div id="version-diff-content"></div></section>
           <div class="detail-grid">
             <section class="content-section"><h3>출처</h3><ul id="source-list" class="linked-list"></ul></section>
             <section class="content-section"><h3>사용처</h3><ul id="uses-list" class="linked-list"></ul></section>
@@ -66,7 +72,7 @@
           <label>검색 범위 <select id="search-scope"><option value="snapshot">선택한 스냅샷</option><option value="project_history">프로젝트 이력 전체</option></select></label><label>역할 <input id="role-query" name="role" placeholder="예: FE, Research"></label><fieldset class="kind-picker"><legend>기록 종류</legend><label><input type="checkbox" name="search-kind" value="revision" checked> revision</label><label><input type="checkbox" name="search-kind" value="capture" checked> capture</label><label><input type="checkbox" name="search-kind" value="observation" checked> observation</label><label><input type="checkbox" name="search-kind" value="goal" checked> goal</label><label><input type="checkbox" name="search-kind" value="assessment" checked> assessment</label><label><input type="checkbox" name="search-kind" value="artifact" checked> artifact</label></fieldset><label class="check-row"><input id="related-context" type="checkbox" name="related"> 관련 문맥도 표시</label></form>
           <div id="search-state" class="muted compact">직접 역할 일치와 관련 문맥을 구분해 표시합니다.</div><div id="search-results" class="result-list"></div>
         </section>
-        <section class="panel"><div class="pane-title small"><div><p class="eyebrow">목표</p><h2>기준별 상태</h2></div></div><div id="goal-state" class="goal-state"></div></section>
+        <section class="panel"><div class="pane-title small"><div><p class="eyebrow">목표</p><h2>스키마별 기준 상태</h2></div></div><div id="goal-state" class="goal-state" tabindex="-1"></div></section>
         <section class="panel timeline-panel"><div class="pane-title small"><div><p class="eyebrow">이력</p><h2>방향과 기록</h2></div></div><p id="timeline-summary" class="muted compact">프로젝트 전체 기록을 불러오는 중입니다.</p><ol id="timeline" class="timeline"></ol></section>
       </aside>
     </main>
@@ -75,6 +81,7 @@
 
     <dialog id="token-dialog"><form method="dialog" class="dialog-card"><div class="dialog-title"><h2>접속 토큰</h2><button class="icon-button" value="cancel" aria-label="닫기">×</button></div><p class="muted">이 브라우저 탭의 sessionStorage에만 보관하고 서버에는 저장하지 않습니다.</p><label>Bearer token <input id="token-input" type="password" autocomplete="off" spellcheck="false"></label><div class="dialog-actions"><button class="button secondary" id="token-clear" type="button">지우기</button><button class="button" id="token-save" value="default">저장</button></div></form></dialog>
     <script src="/graph-model.js" defer></script>
+    <script src="/dashboard-model.js" defer></script>
     <script src="/graph3d.js" defer></script>
     <script src="/app.js" defer></script>
   </body>

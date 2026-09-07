@@ -9,7 +9,7 @@
   const route = new URLSearchParams(window.location.search);
   const state = {
     projectId: route.get('project') || '', snapshot: null, selected: null, knownSeq: null, rootRevisionId: null,
-    view: route.get('view') === '3d' ? '3d' : '2d', exportProjectId: null, exportRecords: null, graph: null, contextGeneration: 0, recordGeneration: 0
+    view: route.get('view') === '3d' ? '3d' : '2d', exportProjectId: null, exportRecords: null, graph: null, goalPayload: null, contextGeneration: 0, recordGeneration: 0
   };
   let graphRenderer = null;
   const maxTreeNodes = () => Number($('max-nodes')?.value || 5000);
@@ -28,6 +28,45 @@
   const dialog = (id) => $(id).showModal();
   const errorMessage = (error) => error instanceof Error ? error.message : String(error);
   const formatValue = (value) => value === null || value === undefined ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+  const kindLabel = (kind) => ({ project: '프로젝트', entity: '항목', schema: '스키마', core: '핵심 항목', idea: '아이디어', revision: '버전', capture: '원문', observation: '관측', goal: '목표', assessment: '평가', artifact: '산출물', candidate: '후보', promotion: '승격', publication: '공식 반영', head_change: '구성 변경', link: '연결' }[kind] || '기록');
+
+  function formatTime(value) {
+    const date = value ? new Date(value) : null;
+    return !date || Number.isNaN(date.valueOf()) ? '시각 미기록' : date.toLocaleString('ko-KR', { dateStyle: 'medium', timeStyle: 'medium' });
+  }
+
+  function recordMap() {
+    return new Map(asArray(state.exportRecords).map((record) => [record.id, record]));
+  }
+
+  function titleForRecord(record, fallback = '') {
+    if (!record) return fallback || '연결된 기록';
+    const data = record.data || {};
+    if (record.kind === 'revision') {
+      const entity = recordMap().get(data.entity_id);
+      return text(entity?.data?.title || data.title || data.body, fallback || '버전');
+    }
+    return text(data.title || data.statement || data.metric || data.label || data.uri || data.source_kind, fallback || kindLabel(record.kind));
+  }
+
+  function titleForId(id, fallback = '') {
+    if (!id) return fallback || '연결된 기록';
+    const snapshotNode = snapshotNodeMap().get(id);
+    return text(snapshotNode?.title || titleForRecord(recordMap().get(id), ''), fallback || '연결된 기록');
+  }
+
+  function recordTime(record) {
+    return formatTime(record?.recorded_at || record?.data?.occurred_at);
+  }
+
+  function timestampSuffix(record) {
+    return record?.recorded_at || record?.data?.occurred_at ? ` · ${recordTime(record)}` : '';
+  }
+
+  function humanEntryTitle(value, id, fallback = '연결된 기록') {
+    const candidate = value === null || value === undefined ? '' : String(value).trim();
+    return candidate && candidate !== String(id || '') ? candidate : titleForId(id, fallback);
+  }
 
   function updateRoute() {
     const url = new URL(window.location.href);
@@ -69,7 +108,7 @@
   function recordButton(entry, label) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = label;
+    button.textContent = label || titleForId(entry.id || entry.revision_id);
     button.addEventListener('click', () => openLinkedRecord(entry.id || entry.revision_id));
     return button;
   }
@@ -87,16 +126,19 @@
       const li = document.createElement('li');
       const item = typeof entry === 'object' ? entry : { title: entry };
       const recordId = item.id || item.revision_id || item.to_id || item.from_id;
-      if (recordId) li.append(recordButton({ id: recordId }, text(item.title || item.statement || item.body_preview || recordId)));
+      if (recordId) {
+        const linked = recordMap().get(recordId);
+        li.append(recordButton({ id: recordId }, `${humanEntryTitle(item.title || item.statement || item.body_preview, recordId)}${timestampSuffix(item.recorded_at ? item : linked)}`));
+      }
       else li.textContent = text(item.title || item.statement || item);
       list.append(li);
     });
   }
   function occurrenceLabel(occurrence) {
-    const root = text(occurrence?.root_revision_id, 'root 미제공');
-    const path = asArray(occurrence?.slot_path).join(' / ') || '(root)';
+    const root = titleForId(occurrence?.root_revision_id, '루트 구성');
+    const path = asArray(occurrence?.slot_path).length ? `${asArray(occurrence.slot_path).length}단계 하위 위치` : '루트';
     const roles = asArray(occurrence?.roles).join(', ') || '역할 없음';
-    return `root ${root} · ${path} · ${roles}`;
+    return `${root} · ${path} · ${roles}`;
   }
   function occurrenceButton(revisionId, occurrence, className = 'occurrence-button', knownRoot = null) {
     const contextualOccurrence = occurrence?.root_revision_id || !knownRoot
@@ -159,6 +201,7 @@
         if (current?.revision_id || fallback?.id) return selectRecord(current?.revision_id || fallback.id);
       }
       renderRecord(payload, null);
+      revealSelectedDetail();
     } catch (error) {
       if (generation !== state.contextGeneration || requestGeneration !== state.recordGeneration) return;
       notify(`연결된 기록을 열지 못했습니다: ${errorMessage(error)}`, 'error');
@@ -198,7 +241,7 @@
         item.type = 'button';
         item.className = 'tree-item';
         item.dataset.recordId = occurrence.revision_id;
-        item.textContent = text(details.title, occurrence.revision_id);
+        item.textContent = text(details.title, titleForId(occurrence.revision_id, '구성 항목'));
         item.addEventListener('click', () => selectRecord(
           occurrence.revision_id,
           occurrence.root_revision_id ? occurrence : { ...occurrence, root_revision_id: state.snapshot.root_revision_id },
@@ -206,7 +249,8 @@
         row.append(item);
         const kind = document.createElement('span');
         kind.className = 'tree-kind';
-        kind.textContent = text(details.entity_kind, '');
+        kind.textContent = kindLabel(details.entity_kind);
+        item.title = `${text(details.title, '항목')} · 서버 기록 ${recordTime(details)}`;
         row.append(kind);
         li.append(row);
         if (children.length) {
@@ -236,20 +280,22 @@
     const data = record.data || {};
     const entity = payload.entity?.data || {};
     const occurrence = selectedOccurrence || null;
-    const isRevision = record.kind === 'revision';
     state.selected = { record, occurrence, entityKind: entity.entity_kind || (data.entity_id === state.projectId ? 'project' : null) };
     $('record-empty').hidden = true;
     $('record-detail').hidden = false;
     const snapshotNode = snapshotNodeMap().get(record.id);
-    $('record-kind').textContent = text(record.kind, 'record').toUpperCase();
-    $('record-title').textContent = text(entity.title || data.title || data.metric || data.uri || snapshotNode?.title, record.id);
-    $('record-meta').textContent = `${record.id} · seq ${text(record.seq)} · ${text(record.recorded_at)}`;
+    $('record-kind').textContent = kindLabel(record.kind);
+    $('record-title').textContent = text(entity.title || titleForRecord(record, '') || snapshotNode?.title, '제목 없는 기록');
+    $('current-selection').textContent = `현재 선택: ${$('record-title').textContent} · ${kindLabel(entity.entity_kind || record.kind)}${occurrence?.roles?.length ? ` · ${occurrence.roles.join(', ')}` : ''}`;
+    $('record-time').textContent = `서버 기록 ${recordTime(record)}`;
+    $('record-raw').textContent = JSON.stringify(record, null, 2);
+    $('record-meta').textContent = `record_id: ${record.id} · seq: ${text(record.seq)} · recorded_at: ${text(record.recorded_at)}${occurrence ? ` · root_revision_id: ${text(occurrence.root_revision_id)} · slot_path: ${asArray(occurrence.slot_path).join('/')}` : ''}`;
     const badgeHolder = $('record-badges');
     clear(badgeHolder);
     [entity.entity_kind, data.change_kind, data.source?.claim_mode, data.source?.origin].filter(Boolean).forEach((value) => {
       const badge = document.createElement('span');
       badge.className = `badge ${value === 'official' ? 'official' : value === 'ai' || value === 'inferred' ? 'proposed' : ''}`;
-      badge.textContent = String(value);
+      badge.textContent = ({project:'프로젝트',schema:'스키마',core:'핵심 묶음',idea:'아이디어',composition:'구성 변경',semantic:'의미 변경',initial:'최초 버전',correction:'교정',inferred:'추론',extracted:'원문 추출',human:'사람 입력',ai:'AI 입력',official:'공식'}[value] || String(value));
       badgeHolder.append(badge);
     });
     const typedContent = {
@@ -264,43 +310,31 @@
     };
     $('record-content').textContent = text(typedContent[record.kind] || data.note || data.description, '표시할 본문이 없습니다.');
     const facts = [];
-    appendFact(facts, 'kind', record.kind);
+    appendFact(facts, '종류', kindLabel(record.kind));
     appendFact(facts, '역할', occurrence?.roles?.join(', '));
-    appendFact(facts, 'slot path', occurrence?.slot_path?.join(' / '));
-    appendFact(facts, 'root revision', occurrence?.root_revision_id);
-    appendFact(facts, 'pinned revision', occurrence?.revision_id || (isRevision ? record.id : null));
+    appendFact(facts, '사용 위치', occurrence?.slot_path?.length ? `${occurrence.slot_path.length}단계 하위 위치` : occurrence ? '루트' : null);
     if (record.kind === 'capture') {
       appendFact(facts, '발생 시각', data.occurred_at);
       appendFact(facts, '출처', data.source_kind);
-      appendFact(facts, 'digest', data.content_digest);
     } else if (record.kind === 'observation') {
       appendFact(facts, 'metric', data.metric);
       appendFact(facts, 'value', data.value);
       appendFact(facts, 'status', data.status);
       appendFact(facts, '발생 시각', data.occurred_at);
-      appendFact(facts, '환경', data.environment);
-      appendFact(facts, 'artifacts', data.artifact_ids?.join(', '));
+      appendFact(facts, '실행 환경', data.environment?.runtime);
+      appendFact(facts, '모델 버전', data.environment?.model_version);
     } else if (record.kind === 'goal') {
-      appendFact(facts, 'scope root', data.scope?.root_revision_id);
-      appendFact(facts, 'scope path', data.scope?.slot_path?.join(' / '));
-      appendFact(facts, 'criteria', data.criteria);
+      appendFact(facts, '판정 기준', asArray(data.criteria).map(criterion => `${criterion.statement}${criterion.threshold !== null && criterion.threshold !== undefined ? ` · ${comparatorLabel(criterion.comparator)} ${metricValue(criterion.threshold, criterion.unit)}` : ''}`).join(' / '));
     } else if (record.kind === 'assessment') {
-      appendFact(facts, 'baseline', data.baseline_id);
       appendFact(facts, 'status', data.status);
       appendFact(facts, 'evidence cutoff', data.evidence_cutoff_at);
-      appendFact(facts, 'evidence observations', data.evidence_observation_ids?.join(', '));
     } else if (record.kind === 'artifact') {
-      appendFact(facts, 'digest', data.digest);
       appendFact(facts, 'media type', data.media_type);
       appendFact(facts, 'size', data.size_bytes);
     } else if (record.kind === 'promotion') {
-      appendFact(facts, 'candidate', data.candidate_id);
-      appendFact(facts, 'entity', data.entity_id);
-      appendFact(facts, 'revision', data.revision_id);
     } else if (record.kind === 'candidate') {
       appendFact(facts, 'status', data.status);
       appendFact(facts, 'origin', data.origin);
-      appendFact(facts, 'capture', data.capture_id);
     }
     const anchor = record.kind === 'candidate' ? data.source_anchor : data.source?.source_anchor;
     if (anchor) {
@@ -309,19 +343,113 @@
     }
     renderFacts(facts);
     const source = [];
-    if (data.source?.capture_id) source.push({ title: `${data.source.origin} · ${data.source.claim_mode} · ${data.source.capture_id}`, id: data.source.capture_id });
+    if (data.source?.capture_id) source.push({ title: `${text(data.source.origin, '출처')} · ${text(data.source.claim_mode, '주장')} · ${titleForId(data.source.capture_id, '원문')}`, id: data.source.capture_id });
     if (record.kind === 'candidate' && data.capture_id && data.capture_id !== data.source?.capture_id) {
-      source.push({ title: `candidate capture · ${data.capture_id}`, id: data.capture_id });
+      source.push({ title: `후보 원문 · ${titleForId(data.capture_id, '원문')}`, id: data.capture_id });
     }
     renderList('source-list', source, '연결된 출처가 없습니다.');
     renderOccurrences('uses-list', asArray(payload.occurrences), '선택한 기록에 사용 위치가 없습니다.');
     const lineage = payload.lineage || {};
     renderList('lineage-list', [...asArray(lineage.derived_from), ...asArray(lineage.derives), ...asArray(lineage.corrections)], '계보가 없습니다.');
     const evidence = payload.evidence || {};
-    renderList('criteria-list', [...asArray(evidence.assessments), ...asArray(evidence.observations)].map((item) => ({ id: item.id, title: item.data?.status || item.id })), '평가나 관측 근거가 없습니다.');
+    renderList('criteria-list', [...asArray(evidence.assessments), ...asArray(evidence.observations)].map((item) => ({ id: item.id, title: `${kindLabel(item.kind)} · ${text(item.data?.status || item.data?.metric, '기록')} · ${recordTime(item)}` })), '평가나 관측 근거가 없습니다.');
+    renderVersionDiff(record);
+    renderSchemaGoals(state.goalPayload);
   }
 
-  async function selectRecord(revisionId, occurrence = null) {
+  function slotDescription(slot) {
+    const revisionTitle = titleForId(slot?.revision_id, '연결된 항목');
+    const roles = asArray(slot?.roles).join(', ');
+    return roles ? `${revisionTitle} · 역할 ${roles}` : revisionTitle;
+  }
+
+  function appendDiffSlotList(holder, heading, slots) {
+    if (!asArray(slots).length) return;
+    const block = document.createElement('div');
+    block.className = 'diff-slots';
+    const title = document.createElement('h4');
+    title.textContent = heading;
+    const list = document.createElement('ul');
+    asArray(slots).forEach((slot) => {
+      const item = document.createElement('li');
+      if (slot?.before || slot?.after) item.textContent = `${slotDescription(slot.before)} → ${slotDescription(slot.after)}`;
+      else item.textContent = slotDescription(slot);
+      list.append(item);
+    });
+    block.append(title, list);
+    holder.append(block);
+  }
+
+  function renderVersionDiff(record, compareId = null) {
+    const section = $('version-diff');
+    const holder = $('version-diff-content');
+    clear(holder);
+    if (record.kind !== 'revision' || !window.IdeaDashboardModel || !Array.isArray(state.exportRecords)) {
+      section.hidden = true;
+      return;
+    }
+    const diff = window.IdeaDashboardModel.revisionDiff(state.exportRecords, record.id, compareId || undefined);
+    section.hidden = false;
+    const summary = document.createElement('p');
+    summary.className = 'diff-status';
+    if (diff.status === 'ready') summary.textContent = `이전 버전과 비교합니다.${diff.reason ? ` 변경 이유: ${diff.reason}` : ''}`;
+    else if (diff.status === 'ambiguous') summary.textContent = '이전 버전 후보가 여럿입니다. 실제 계보를 선택해야 비교를 표시합니다.';
+    else summary.textContent = '비교할 이전 버전이 확정되지 않았습니다.';
+    holder.append(summary);
+    if (diff.status === 'ambiguous' && asArray(diff.candidates).length) {
+      const candidates = document.createElement('div');
+      candidates.className = 'diff-candidates';
+      asArray(diff.candidates).forEach((candidate) => {
+        const id = typeof candidate === 'string' ? candidate : candidate?.revision_id || candidate?.id;
+        if (!id) return;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'occurrence-button';
+        button.textContent = `${titleForId(id, '이전 버전')} · ${recordTime(recordMap().get(id))} 비교`;
+        button.addEventListener('click', () => renderVersionDiff(record, id));
+        candidates.append(button);
+      });
+      holder.append(candidates);
+      return;
+    }
+    if (diff.status !== 'ready') return;
+    const copy = document.createElement('div');
+    copy.className = 'diff-copy';
+    const beforeChars = Array.from(diff.before?.body || '');
+    const afterChars = Array.from(diff.after?.body || '');
+    let prefix = 0, suffix = 0;
+    while (prefix < beforeChars.length && prefix < afterChars.length && beforeChars[prefix] === afterChars[prefix]) prefix++;
+    while (suffix < beforeChars.length - prefix && suffix < afterChars.length - prefix && beforeChars.at(-1 - suffix) === afterChars.at(-1 - suffix)) suffix++;
+    [['− 이전 본문', beforeChars, 'del'], ['+ 현재 본문', afterChars, 'ins']].forEach(([label, chars, tag]) => {
+      const block = document.createElement('div');
+      const heading = document.createElement('h4');
+      heading.textContent = label;
+      const paragraph = document.createElement('p');
+      paragraph.append(document.createTextNode(chars.slice(0, prefix).join('')));
+      const difference = chars.slice(prefix, chars.length - suffix).join('');
+      if (difference) {
+        const highlight = document.createElement(tag);
+        highlight.textContent = difference;
+        paragraph.append(highlight);
+      }
+      if (suffix) paragraph.append(document.createTextNode(chars.slice(-suffix).join('')));
+      if (!chars.length) paragraph.textContent = '본문 없음';
+      block.append(heading, paragraph);
+      copy.append(block);
+    });
+    holder.append(copy);
+    appendDiffSlotList(holder, '추가된 사용 위치', diff.slots?.added);
+    appendDiffSlotList(holder, '제거된 사용 위치', diff.slots?.removed);
+    appendDiffSlotList(holder, '변경된 역할 또는 연결', diff.slots?.changed);
+    if (asArray(diff.metadata_changes).length) {
+      const changes = document.createElement('p');
+      changes.className = 'diff-status';
+      changes.textContent = `변경된 정보: ${asArray(diff.metadata_changes).map((change) => ({tags:'태그',source:'출처',change_kind:'변경 유형',correction_of:'교정 대상'}[change.field] || change.field)).join(', ')}`;
+      holder.append(changes);
+    }
+  }
+
+  async function selectRecord(revisionId, occurrence = null, reveal = true) {
     const generation = state.contextGeneration;
     const requestGeneration = ++state.recordGeneration;
     try {
@@ -330,29 +458,53 @@
       document.querySelectorAll('.tree-item[aria-current="true"]').forEach((node) => node.removeAttribute('aria-current'));
       document.querySelector(`.tree-item[data-record-id="${CSS.escape(String(revisionId))}"]`)?.setAttribute('aria-current', 'true');
       renderRecord(payload, occurrence);
+      if (reveal) revealSelectedDetail();
     } catch (error) {
       if (generation !== state.contextGeneration || requestGeneration !== state.recordGeneration) return;
       notify(`기록을 불러오지 못했습니다: ${errorMessage(error)}`, 'error');
     }
   }
 
-  function setView(view) {
+  function setView(view, reveal = true) {
     state.view = view === '3d' ? '3d' : '2d';
     $('view-2d').setAttribute('aria-pressed', String(state.view === '2d'));
     $('view-3d').setAttribute('aria-pressed', String(state.view === '3d'));
     $('graph-workbench').hidden = state.view !== '3d';
     updateRoute();
-    if (state.view === '3d' && state.projectId) loadGraph();
+    if (state.view === '3d' && state.projectId) {
+      loadGraph();
+      if (reveal) $('graph-workbench').scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else if (reveal) {
+      revealSelectedDetail();
+    }
+  }
+
+  function revealSelectedDetail() {
+    if ($('record-detail').hidden) return;
+    requestAnimationFrame(() => $('record-detail').scrollIntoView({ block: 'start', behavior: 'smooth' }));
   }
 
   function graphTime(value) {
-    const date = new Date(value);
-    return Number.isNaN(date.valueOf()) ? text(value) : date.toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'medium' });
+    return formatTime(value);
   }
 
   function useHistoricalScope() {
     $('stream-select').value = 'working';
     $('effective-at').value = '';
+  }
+
+  function updateLatestButton() {
+    const historical = Boolean(state.rootRevisionId) || state.knownSeq !== null || Boolean($('known-at').value) || Boolean($('effective-at').value) || $('stream-select').value !== 'working';
+    $('latest-button').hidden = !historical;
+  }
+
+  function openLatest() {
+    state.rootRevisionId = null;
+    state.knownSeq = null;
+    $('stream-select').value = 'working';
+    $('known-at').value = '';
+    $('effective-at').value = '';
+    loadProject();
   }
 
   function captureTimelineTitle(capture) {
@@ -401,11 +553,11 @@
       item.className = 'graph-node-row';
       const button = document.createElement('button');
       button.type = 'button';
-      button.textContent = text(node.title, node.revision_id || node.id);
+      button.textContent = text(node.title, '제목 없는 항목');
       button.addEventListener('click', () => selectGraphNode(node));
       const meta = document.createElement('span');
       meta.className = 'graph-node-meta';
-      meta.textContent = `${text(node.kind)} · seq ${text(node.seq)} · 깊이 ${text(node.y)} · 층 ${text(node.layer)} · 사용 ${asArray(node.usages).length}`;
+      meta.textContent = `${kindLabel(node.kind)} · ${graphTime(node.recorded_at)} · 깊이 ${text(node.y)} · 층 ${text(node.layer)} · 사용 위치 ${asArray(node.usages).length}`;
       item.append(button, meta);
       holder.append(item);
     });
@@ -448,7 +600,7 @@
     const selection = $('graph-selection');
     clear(selection);
     const title = document.createElement('span');
-    title.textContent = `${text(node.title, node.revision_id || node.id)} · seq ${text(node.seq)} · ${graphTime(node.recorded_at)}`;
+    title.textContent = `${text(node.title, '제목 없는 항목')} · 서버 기록 ${graphTime(node.recorded_at)}`;
     selection.append(title);
     const usages = asArray(node.usages);
     if (usages.length === 1 && node.revision_id) {
@@ -492,6 +644,7 @@
     const generation = await loadProject();
     if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
     await selectRecord(node.revision_id);
+    revealSelectedDetail();
   }
 
   async function openGraphOccurrence(node, usage) {
@@ -504,6 +657,7 @@
     const generation = await loadProject();
     if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
     await selectRecord(node.revision_id, { ...usage, revision_id: node.revision_id });
+    revealSelectedDetail();
   }
 
   async function loadGraph(generation = state.contextGeneration) {
@@ -580,6 +734,8 @@
       $('effective-at').value = '';
     }
     state.projectId = nextProjectId;
+    state.goalPayload = null;
+    updateLatestButton();
     if (state.exportProjectId !== state.projectId) {
       state.exportProjectId = null;
       state.exportRecords = null;
@@ -587,6 +743,11 @@
     }
     updateRoute();
     state.selected = null;
+    state.snapshot = null;
+    clear($('tree'));
+    clear($('project-schema-summary'));
+    clear($('goal-state'));
+    $('current-selection').textContent = '선택한 구성을 불러오는 중입니다.';
     $('record-detail').hidden = true;
     $('record-empty').hidden = false;
     if (!state.projectId) {
@@ -601,15 +762,19 @@
       state.snapshot = snapshot;
       renderTree();
       const selected = state.snapshot.selected_by || {};
-      const source = state.rootRevisionId ? '선택한 이력' : (state.snapshot.selected_by?.publication_id ? `official publication ${state.snapshot.selected_by.publication_id}` : `working head ${state.snapshot.selected_by?.head_change_id || '없음'}`);
+      const rootTitle = text(snapshotNodeMap().get(state.snapshot.root_revision_id)?.title, '제목 없는 최신 구성');
+      const friendlySource = state.rootRevisionId ? '선택한 이력' : (state.snapshot.selected_by?.publication_id ? '공식 구성' : '작업 중 구성');
       const lowerLimitNotice = maxTreeNodes() < 5000 ? ` · 낮은 표시 한도 ${maxTreeNodes()}개 선택됨` : '';
-      $('tree-summary').textContent = state.snapshot.root_revision_id ? `${source} · revision ${state.snapshot.root_revision_id} · server known seq ${selected.known_seq}${lowerLimitNotice}${state.snapshot.truncated ? ` · ${maxTreeNodes()}개에서 잘림` : ''}` : '선택한 서버 기록 시점에는 head가 없습니다.';
+      const scopeTime = selected.known_at ? ` · 조회 시점 ${formatTime(selected.known_at)}` : '';
+      $('tree-summary').textContent = state.snapshot.root_revision_id ? `${friendlySource} · ${rootTitle}${scopeTime}${lowerLimitNotice}${state.snapshot.truncated ? ` · ${maxTreeNodes()}개에서 잘림` : ''}` : '선택한 서버 기록 시점에는 구성이 없습니다.';
+      $('current-selection').textContent = state.snapshot.root_revision_id ? `현재 선택: ${friendlySource} · ${rootTitle}` : '현재 선택: 이 시점에는 구성이 없습니다.';
       await Promise.all([loadGoals(generation), exportPromise]);
       if (generation !== state.contextGeneration) return null;
+      renderSchemaGoals(state.goalPayload);
       loadTimeline(generation);
       if (state.view === '3d') await loadGraph(generation);
       if (state.snapshot.root_revision_id) {
-        await selectRecord(state.snapshot.root_revision_id, { root_revision_id: state.snapshot.root_revision_id, revision_id: state.snapshot.root_revision_id, slot_path: [], roles: [] });
+        await selectRecord(state.snapshot.root_revision_id, { root_revision_id: state.snapshot.root_revision_id, revision_id: state.snapshot.root_revision_id, slot_path: [], roles: [] }, false);
       }
       return generation === state.contextGeneration ? generation : null;
     } catch (error) {
@@ -628,14 +793,14 @@
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'result-record';
+    const id = entry.revision_id || entry.record_id || entry.candidate_id;
     const title = document.createElement('span');
     title.className = 'result-title';
-    title.textContent = text(entry.title, entry.revision_id || entry.candidate_id);
+    title.textContent = humanEntryTitle(entry.title, id, kindLabel(entry.kind));
     const meta = document.createElement('span');
     meta.className = 'result-meta';
-    meta.textContent = lane === 'related' ? `관련 문맥 · ${text(entry.reason)}` : lane === 'pending' ? `후보 · ${text(entry.origin)}` : '직접 일치';
+    meta.textContent = `${lane === 'related' ? `관련 문맥 · ${text(entry.reason)}` : lane === 'pending' ? `후보 · ${text(entry.origin)}` : '직접 일치'}${timestampSuffix(entry)}`;
     button.append(title, meta);
-    const id = entry.revision_id || entry.record_id || entry.candidate_id;
     if (id) button.addEventListener('click', () => selectRecord(id));
     card.append(button);
     const occurrences = asArray(entry.occurrences);
@@ -682,70 +847,214 @@
     }
   }
 
+  function laneHasCurrentData(lane) {
+    return Number(lane?.own) + Number(lane?.descendant) + Number(lane?.required?.total) + asArray(lane?.numeric).length > 0;
+  }
+
+  const comparatorLabel = (value) => ({ lte: '≤', lt: '<', gte: '≥', gt: '>', eq: '=', ne: '≠' }[String(value || '').toLowerCase()] || text(value, '기준'));
+  const goalStatusLabel = (value) => ({ met: '충족', unmet: '미충족', unknown: '미측정', disputed: '이견', recheck: '재검토' }[String(value || '').toLowerCase()] || '미측정');
+
+  function metricValue(value, unit) {
+    const ratio = String(unit || '').toLowerCase().includes('ratio') || String(unit || '').includes('비율');
+    if (ratio && typeof value === 'number') return `${(value * 100).toLocaleString('ko-KR', { maximumFractionDigits: 2 })}%`;
+    return formatValue(value);
+  }
+
+  function scopedGoalStatements(schema, payload, proposed = false, ownOnly = false) {
+    const root = state.snapshot?.root_revision_id;
+    const payloadRoot = payload?.scope?.root_revision_id;
+    return asArray(payload?.[proposed ? 'proposed_goals' : 'goals'])
+      .filter((goal) => {
+        if (asArray(goal.baselines).length && asArray(goal.baselines).every((baseline) => baseline.superseded_by != null)) return false;
+        const scope = goal.scope || {};
+        const path = asArray(scope.slot_path);
+        return (scope.root_revision_id || payloadRoot) === root
+          && (proposed ? scope.in_current_snapshot !== false : scope.in_current_snapshot === true)
+          && path[0] === schema.slot_path?.[0] && (!ownOnly || path.length === schema.slot_path.length);
+      })
+      .map((goal) => text(goal.statement, '목표 문장 없음'));
+  }
+
+  function appendGoalLane(holder, title, lane, proposed = false, statements = []) {
+    const block = document.createElement('section');
+    block.className = 'goal-lane';
+    block.dataset.origin = proposed ? 'ai_proposed' : 'official';
+    const heading = document.createElement('h4');
+    heading.textContent = title;
+    block.append(heading);
+    if (!laneHasCurrentData(lane)) {
+      const unset = document.createElement('p');
+      unset.textContent = proposed ? 'AI 제안 기준이 아직 없습니다.' : '현재 공식 목표가 설정되지 않았습니다.';
+      block.append(unset);
+      holder.append(block);
+      return;
+    }
+    if (statements.length) {
+      const statement = document.createElement('p');
+      statement.className = 'goal-statement';
+      statement.textContent = `목표: ${statements.join(' · ')}`;
+      block.append(statement);
+    }
+    const coverage = document.createElement('p');
+    coverage.textContent = `직접 목표 ${Number(lane.own) || 0}건 · 하위 항목 목표 ${Number(lane.descendant) || 0}건`;
+    block.append(coverage);
+    const required = lane.required || {};
+    const criteria = document.createElement('p');
+    criteria.textContent = `필수 기준 ${Number(required.total) || 0}개 · 충족 ${Number(required.met) || 0} · 미충족 ${Number(required.unmet) || 0} · 확인 필요 ${Number(required.unknown) || 0}${Number(required.disputed) ? ` · 이견 ${required.disputed}` : ''}${Number(required.recheck) ? ` · 재확인 ${required.recheck}` : ''}`;
+    block.append(criteria);
+    if (asArray(lane.numeric).length) {
+      const values = document.createElement('ul');
+      values.className = 'goal-numeric';
+      asArray(lane.numeric).forEach((criterion) => {
+        const item = document.createElement('li');
+        const measured = criterion.observed_value === null || criterion.observed_value === undefined ? '측정 없음' : metricValue(criterion.observed_value, criterion.unit);
+        const isRatio = String(criterion.unit || '').toLowerCase().includes('ratio') || String(criterion.unit || '').includes('비율');
+        const threshold = criterion.threshold === null || criterion.threshold === undefined ? '기준 미설정' : `${comparatorLabel(criterion.comparator)} ${metricValue(criterion.threshold, criterion.unit)}${criterion.unit && !isRatio ? ` ${criterion.unit}` : ''}`;
+        item.textContent = `${text(criterion.statement, '정량 기준')} · ${proposed ? 'AI 추정값' : '실제 측정'} ${measured} · ${proposed ? '예상 기준' : '목표 기준'} ${threshold} · ${goalStatusLabel(criterion.status)}`;
+        values.append(item);
+      });
+      block.append(values);
+    }
+    holder.append(block);
+  }
+
+  function laneSummary(lane) {
+    const required = lane?.required || {};
+    const total = Number(required.total) || 0;
+    if (!total) return '기준 미설정';
+    return `${Number(required.met) || 0}/${total} · 미측정 ${Number(required.unknown) || 0}`;
+  }
+
+  async function selectSchema(schema) {
+    if (!schema?.schema_revision_id || !state.snapshot?.root_revision_id) return;
+    await selectRecord(schema.schema_revision_id, {
+      root_revision_id: state.snapshot.root_revision_id,
+      revision_id: schema.schema_revision_id,
+      slot_path: asArray(schema.slot_path),
+      roles: []
+    });
+    $('record-detail').scrollIntoView({ block: 'start', behavior: 'smooth' });
+    $('goal-state').focus({ preventScroll: true });
+  }
+
+  function renderProjectSummary(schemas, payload) {
+    const title = $('project-summary-title');
+    const meta = $('project-summary-meta');
+    const rows = $('project-schema-summary');
+    const rootTitle = text(snapshotNodeMap().get(state.snapshot?.root_revision_id)?.title, '제목 없는 최신 구성');
+    const cutoff = Number(payload?.scope?.known_seq);
+    const records = asArray(state.exportRecords).filter((record) => !Number.isFinite(cutoff) || Number(record.seq) <= cutoff);
+    const latest = records.slice().sort((a, b) => Number(b.seq) - Number(a.seq))[0];
+    const changes = records.filter((record) => record.kind === 'head_change').length;
+    title.textContent = rootTitle;
+    meta.textContent = `${state.rootRevisionId || state.knownSeq !== null ? '선택한 시점 기록' : '최신 서버 기록'} ${recordTime(latest)} · 구성 변경 ${changes}건 · 스키마 ${schemas.length}개`;
+    clear(rows);
+    schemas.forEach((schema) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'project-schema-row';
+      const heading = document.createElement('strong');
+      heading.textContent = schema.title || '제목 없는 스키마';
+      const goal = document.createElement('span');
+      const officialStatements = scopedGoalStatements(schema, payload, false, true);
+      const aiStatements = scopedGoalStatements(schema, payload, true, true);
+      goal.textContent = officialStatements[0] || aiStatements[0] || '현재 목표가 설정되지 않았습니다.';
+      const status = document.createElement('span');
+      status.textContent = `${schema.official.own ? '공식 기준' : schema.official.descendant ? '하위 공식 기준' : '공식'} ${laneSummary(schema.official)} · AI ${laneSummary(schema.ai_proposed)}`;
+      button.append(heading, goal, status);
+      button.addEventListener('click', () => selectSchema(schema));
+      rows.append(button);
+    });
+  }
+
+  function renderSchemaGoals(payload) {
+    const holder = $('goal-state');
+    if (!holder) return;
+    clear(holder);
+    const model = window.IdeaDashboardModel;
+    if (!payload || !state.snapshot) {
+      holder.className = 'goal-state muted compact';
+      holder.textContent = '목표와 기준을 불러오는 중입니다.';
+      return;
+    }
+    const schemas = model && Array.isArray(state.exportRecords) ? model.schemaGoals(state.exportRecords, state.snapshot, payload) : [];
+    renderProjectSummary(schemas, payload);
+    const selectedPath = asArray(state.selected?.occurrence?.slot_path);
+    const visible = selectedPath.length ? schemas.filter((schema) => schema.slot_path?.[0] === selectedPath[0]) : schemas;
+    if (!visible.length) {
+      holder.className = 'goal-state muted compact';
+      holder.textContent = state.snapshot.root_revision_id ? '이 구성에는 표시할 스키마별 목표가 없습니다. 현재 공식 목표가 설정되지 않았을 수 있습니다.' : '이 시점에는 구성별 목표를 계산할 수 없습니다.';
+      return;
+    }
+    holder.className = 'goal-state';
+    visible.forEach((schema) => {
+      const card = document.createElement('section');
+      card.className = 'schema-goal';
+      const heading = document.createElement('h3');
+      heading.textContent = schema.title || '제목 없는 스키마';
+      card.append(heading);
+      appendGoalLane(card, '공식 목표와 실제 측정', schema.official, false, scopedGoalStatements(schema, payload, false));
+      appendGoalLane(card, 'AI 제안과 예상 기준', schema.ai_proposed, true, scopedGoalStatements(schema, payload, true));
+      if (asArray(schema.historical_references).length) {
+        const historical = document.createElement('div');
+        historical.className = 'goal-history';
+        historical.textContent = `이전 범위 목표 ${schema.historical_references.length}건은 현재 충족률에 합산하지 않습니다.`;
+        asArray(schema.historical_references).filter((reference, index, all) => all.findIndex(other => other.root_revision_id === reference.root_revision_id) === index).forEach((reference) => {
+          if (!reference.root_revision_id) return;
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'inline-button';
+          button.textContent = '이전 범위 열기';
+          button.addEventListener('click', () => openHistoricalRoot(reference.root_revision_id));
+          historical.append(document.createTextNode(' '), button);
+        });
+        card.append(historical);
+      }
+      holder.append(card);
+    });
+    const stale = asArray(payload.stale_assessments);
+    if (stale.length) {
+      const history = document.createElement('details');
+      history.className = 'goal-item stale';
+      const heading = document.createElement('summary');
+      heading.className = 'goal-title';
+      heading.textContent = `이전 범위 평가 ${stale.length}건`;
+      const note = document.createElement('span');
+      note.className = 'goal-meta';
+      note.textContent = '현재 공식 충족률에는 포함하지 않으며, 범위와 근거를 다시 검토해야 합니다.';
+      history.append(heading, note);
+      stale.forEach((assessment) => {
+        const item = document.createElement('p');
+        item.className = 'goal-meta';
+        item.textContent = `${assessment.reason === 'root_not_in_snapshot' ? '기획 버전 변경' : '평가 범위 변경'} · ${{target_changed:'대상 내용 변경',unchanged_target:'대상은 유지됨',path_removed:'사용 위치 제거'}[assessment.applicability] || '적용 여부 재검토'}`;
+        if (assessment.original_root) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'inline-button';
+          button.textContent = '이전 범위 열기';
+          button.addEventListener('click', () => openHistoricalRoot(assessment.original_root, assessment.recorded_at));
+          item.append(document.createTextNode(' '), button);
+        }
+        history.append(item);
+      });
+      holder.append(history);
+    }
+  }
+
   async function loadGoals(generation = state.contextGeneration) {
     const holder = $('goal-state');
     if (generation !== state.contextGeneration) return;
     clear(holder);
-    if (!state.snapshot?.root_revision_id) {
-      holder.className = 'goal-state muted compact';
-      holder.textContent = 'head가 생기면 목표와 기준을 표시합니다.';
-      return;
-    }
+    holder.className = 'goal-state muted compact';
+    holder.textContent = '목표와 기준을 불러오는 중입니다.';
     try {
-      const payload = await api(`${ENDPOINTS.goals}${query({ ...scope(), root_revision_id: state.snapshot.root_revision_id, max_nodes: maxTreeNodes() })}`);
+      const payload = await api(`${ENDPOINTS.goals}${query({ ...scope(), root_revision_id: state.snapshot?.root_revision_id || undefined, max_nodes: maxTreeNodes() })}`);
       if (generation !== state.contextGeneration) return;
-      const goals = asArray(payload.goals);
-      const stale = asArray(payload.stale_assessments);
-      if (!goals.length && !stale.length) {
-        holder.className = 'goal-state muted compact';
-        holder.textContent = `목표가 없습니다. 범위 내 목표 누락 ${asArray(payload.missing_goal_occurrences).length}건`;
-        return;
-      }
-      holder.className = 'goal-state';
-      goals.forEach((goal) => {
-        const item = document.createElement('div');
-        item.className = 'goal-item';
-        const title = document.createElement('span');
-        title.className = 'goal-title';
-        title.textContent = goal.statement;
-        const meta = document.createElement('span');
-        meta.className = 'goal-meta';
-        meta.textContent = `${goal.scope?.in_current_snapshot ? '현재 범위' : '이전 범위'} · 공식 gate: ${goal.gate_status} · 필수 기준 ${asArray(goal.required_criteria_status).map((criterion) => `${criterion.criterion_id}: ${criterion.status}`).join(', ') || '없음'}`;
-        item.append(title, meta);
-        holder.append(item);
-      });
-      const proposals = asArray(payload.proposed_goals);
-      if (proposals.length) {
-        const proposal = document.createElement('div');
-        proposal.className = 'goal-item';
-        proposal.textContent = `AI 제안 목표 ${proposals.length}건 (공식 gate와 별도)`;
-        holder.append(proposal);
-      }
-      if (stale.length) {
-        const heading = document.createElement('p');
-        heading.className = 'muted compact';
-        heading.textContent = `이전 범위 평가 ${stale.length}건: 현재 gate로 자동 승계하지 않습니다.`;
-        holder.append(heading);
-        stale.forEach((assessment) => {
-          const item = document.createElement('div');
-          item.className = 'goal-item stale';
-          const reason = text(assessment.reason, 'scope changed');
-          const applicability = text(assessment.applicability, 'requires review');
-          item.textContent = `${assessment.assessment_id} · ${reason} · ${applicability}`;
-          if (assessment.original_root) {
-            const oldRoot = document.createElement('button');
-            oldRoot.type = 'button';
-            oldRoot.className = 'inline-button';
-            oldRoot.textContent = '이전 root 열기';
-            oldRoot.addEventListener('click', () => openHistoricalRoot(assessment.original_root, assessment.recorded_at));
-            item.append(document.createTextNode(' '), oldRoot);
-          }
-
-          holder.append(item);
-        });
-      }
+      state.goalPayload = payload;
+      renderSchemaGoals(payload);
     } catch (error) {
       if (generation !== state.contextGeneration) return;
+      state.goalPayload = null;
       holder.className = 'goal-state muted compact';
       holder.textContent = `평가를 불러오지 못했습니다: ${errorMessage(error)}`;
     }
@@ -785,11 +1094,11 @@
         const capture = stepRecords.find((record) => record.kind === 'capture');
         const observation = stepRecords.find((record) => record.kind === 'observation');
         const eventTime = capture?.data?.occurred_at;
-        time.textContent = `단계 seq ${seq} · 서버 기록 ${text(stepRecords[0]?.recorded_at)}${eventTime ? ` · 원문 발생 ${eventTime}` : ''}`;
+        time.textContent = `기록 단계 · 서버 기록 ${formatTime(stepRecords[0]?.recorded_at)}${eventTime ? ` · 원문 발생 ${formatTime(eventTime)}` : ''}`;
         const body = document.createElement('button');
         body.type = 'button';
         body.className = 'timeline-button';
-        const kinds = [...new Set(stepRecords.map((record) => record.kind))].join(', ');
+        const kinds = [...new Set(stepRecords.map((record) => kindLabel(record.kind)))].join(', ');
         const captureTitle = captureTimelineTitle(capture);
         const observationTitle = observation ? observationTimelineTitle(observation, recordsById) : null;
         const title = captureTitle || observationTitle || (capture ? `원문 · ${text(capture.data?.source_kind, '기록')}` : null);
@@ -809,7 +1118,7 @@
           const detail = document.createElement('button');
           detail.type = 'button';
           detail.className = 'inline-button';
-          detail.textContent = `${record.kind}: ${text(record.data?.title || record.data?.metric || record.data?.label || record.id)}`;
+          detail.textContent = `${kindLabel(record.kind)}: ${titleForRecord(record, '기록')} · ${recordTime(record)}`;
           detail.addEventListener('click', () => openTimelineRecord(record, root));
           details.append(detail);
         });
@@ -817,8 +1126,7 @@
         li.append(details);
         holder.append(li);
       });
-      const selected = state.snapshot?.selected_by?.known_seq;
-      $('timeline-summary').textContent = `프로젝트 전체 ${steps.length}단계 · 현재 선택 checkpoint ${selected ?? '현재'} · 각 단계를 누르면 당시 root와 서버 기록 seq를 엽니다.`;
+      $('timeline-summary').textContent = `프로젝트 전체 ${steps.length}단계 · 현재 선택 ${state.rootRevisionId ? '선택한 이력' : '최신 구성'} · 각 단계를 누르면 당시 구성과 서버 기록을 엽니다.`;
     } catch (error) {
       if (generation !== state.contextGeneration) return;
       const li = document.createElement('li');
@@ -835,7 +1143,7 @@
     state.rootRevisionId = rootRevisionId;
     state.knownSeq = Number.isFinite(Number(known)) ? Number(known) : null;
     $('known-at').value = '';
-    notify(`revision ${rootRevisionId} · server known seq ${state.knownSeq ?? '현재'} 범위를 열었습니다.`, 'success');
+    notify('선택한 이력 범위를 열었습니다.', 'success');
     const generation = await loadProject();
     if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
     await selectRecord(rootRevisionId, { root_revision_id: rootRevisionId, revision_id: rootRevisionId, slot_path: [], roles: [] });
@@ -872,7 +1180,11 @@
   }
 
   function bind() {
+    const resizeHeader = () => document.documentElement.style.setProperty('--topbar-height', `${Math.ceil(document.querySelector('.topbar').getBoundingClientRect().height)}px`);
+    resizeHeader();
+    new ResizeObserver(resizeHeader).observe(document.querySelector('.topbar'));
     $('refresh-button').addEventListener('click', () => { state.exportProjectId = null; state.exportRecords = null; state.graph = null; loadProjects(); });
+    $('latest-button').addEventListener('click', openLatest);
     $('project-select').addEventListener('change', loadProject);
     $('stream-select').addEventListener('change', () => { state.rootRevisionId = null; state.knownSeq = null; loadProject(); });
     $('known-at').addEventListener('change', () => { state.rootRevisionId = null; state.knownSeq = null; loadProject(); });
@@ -893,6 +1205,6 @@
   }
 
   bind();
-  setView(state.view);
+  setView(state.view, false);
   loadProjects();
 })();

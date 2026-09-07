@@ -1638,6 +1638,18 @@ fn required_criteria_status(
         .collect()
 }
 
+fn unassessed_required_criteria(goal: &GoalData, baseline: &BaselineData) -> Vec<Value> {
+    goal.criteria
+        .iter()
+        .filter(|criterion| {
+            criterion.required && baseline.criterion_ids.contains(&criterion.criterion_id)
+        })
+        .map(|criterion| {
+            json!({"criterion_id":criterion.criterion_id,"status":null,"required":true})
+        })
+        .collect()
+}
+
 fn gate_status(results: &[Value]) -> &'static str {
     if results.is_empty() || results.iter().any(|result| result["status"].is_null()) {
         return "unknown";
@@ -1703,10 +1715,7 @@ pub fn goals(ctx: &Context, p: &Params) -> ApiResult<Value> {
         if g.project_id != *project {
             continue;
         }
-        if g.origin == ProposalOrigin::AiProposed {
-            proposed.push(json!({"goal_id":gr.id,"statement":g.statement,"origin":g.origin}));
-            continue;
-        }
+        let is_proposed = g.origin == ProposalOrigin::AiProposed;
         let exact = g.scope.root_revision_id == root
             && graph::resolve_path(&v.ctx, &g.scope.root_revision_id, &g.scope.slot_path)
                 .is_ok_and(|x| x.id == g.scope.target_revision_id);
@@ -1798,6 +1807,7 @@ pub fn goals(ctx: &Context, p: &Params) -> ApiResult<Value> {
                 let required = required_criteria_status(g, baseline, assessment);
                 let projection = json!({
                     "assessment_id": assessment_record.id,
+                    "origin": assessment.origin,
                     "status": assessment.status,
                     "gate_status": gate_status(&required),
                     "evaluator": assessment.evaluator,
@@ -1832,24 +1842,46 @@ pub fn goals(ctx: &Context, p: &Params) -> ApiResult<Value> {
                 })
                 .max();
             if successor.is_none() {
-                if let Some(assessment) = official.as_ref() {
-                    current_gate = Some((
-                        effective_from,
-                        baseline_record.seq,
-                        baseline_record.id.clone(),
-                        assessment["gate_status"]
-                            .as_str()
-                            .unwrap_or("unknown")
-                            .to_string(),
-                        assessment["required_criteria_status"]
-                            .as_array()
-                            .cloned()
-                            .unwrap_or_default(),
-                    ));
-                }
+                let selected_assessment = if is_proposed {
+                    proposed_assessments.last()
+                } else {
+                    official.as_ref()
+                };
+                let (gate, required, status) = selected_assessment.map_or_else(
+                    || {
+                        (
+                            "unknown".to_string(),
+                            unassessed_required_criteria(g, baseline),
+                            Value::Null,
+                        )
+                    },
+                    |assessment| {
+                        (
+                            assessment["gate_status"]
+                                .as_str()
+                                .unwrap_or("unknown")
+                                .to_string(),
+                            assessment["required_criteria_status"]
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default(),
+                            assessment["status"].clone(),
+                        )
+                    },
+                );
+                current_gate = Some((
+                    effective_from,
+                    baseline_record.seq,
+                    baseline_record.id.clone(),
+                    gate,
+                    required,
+                    status,
+                ));
             }
             bases.push(json!({
                 "baseline_id": baseline_record.id,
+                "seq": baseline_record.seq,
+                "recorded_at": baseline_record.recorded_at,
                 "effective_from": baseline.effective_from,
                 "supersedes": baseline.supersedes,
                 "criterion_ids": baseline.criterion_ids,
@@ -1858,16 +1890,21 @@ pub fn goals(ctx: &Context, p: &Params) -> ApiResult<Value> {
                 "proposed_assessments": proposed_assessments,
             }));
         }
-        let (gate, required) = if exact {
+        let (gate, required, status) = if exact {
             current_gate
-                .map(|(_, _, _, gate, required)| (gate, required))
-                .unwrap_or_else(|| ("unknown".to_string(), Vec::new()))
+                .map(|(_, _, _, gate, required, status)| (gate, required, status))
+                .unwrap_or_else(|| ("unknown".to_string(), Vec::new(), Value::Null))
         } else {
-            ("unknown".to_string(), Vec::new())
+            ("unknown".to_string(), Vec::new(), Value::Null)
         };
-        rows.push(json!({"goal_id":gr.id,"statement":g.statement,"origin":g.origin,"scope":{"slot_path":g.scope.slot_path,"target_revision_id":g.scope.target_revision_id,"in_current_snapshot":exact},"origin_project_id":g.project_id,"criteria":g.criteria,"baselines":bases,"gate_status":gate,"required_criteria_status":required }));
+        let projection = json!({"goal_id":gr.id,"statement":g.statement,"origin":g.origin,"scope":{"root_revision_id":g.scope.root_revision_id,"slot_path":g.scope.slot_path,"target_revision_id":g.scope.target_revision_id,"in_current_snapshot":exact},"origin_project_id":g.project_id,"criteria":g.criteria,"baselines":bases,"gate_status":gate,"status":status,"required_criteria_status":required });
+        if is_proposed {
+            proposed.push(projection);
+        } else {
+            rows.push(projection);
+        }
     }
-    let missing=walk.occurrences.iter().filter(|o|!rows.iter().any(|g|g["scope"]["slot_path"]==json!(o.slot_path)&&g["scope"]["target_revision_id"]==json!(o.revision_id))).filter_map(|o|v.ctx.records.get(&o.revision_id).map(|r|{let(e,k,_)=owner(&v.ctx.records,r);json!({"slot_path":o.slot_path,"revision_id":o.revision_id,"entity_id":e,"entity_kind":k})})).collect::<Vec<_>>();
+    let missing=walk.occurrences.iter().filter(|o|!rows.iter().any(|g|g["scope"]["in_current_snapshot"]==true&&g["scope"]["slot_path"]==json!(o.slot_path)&&g["scope"]["target_revision_id"]==json!(o.revision_id))).filter_map(|o|v.ctx.records.get(&o.revision_id).map(|r|{let(e,k,_)=owner(&v.ctx.records,r);json!({"slot_path":o.slot_path,"revision_id":o.revision_id,"entity_id":e,"entity_kind":k})})).collect::<Vec<_>>();
     Ok(
         json!({"scope":{"project_id":project,"stage":s.as_str(),"known_seq":v.known,"root_revision_id":root},"goals":rows,"stale_assessments":stale,"missing_goal_occurrences":missing,"proposed_goals":proposed,"note":"gate_status uses only required criteria; no atom-count progress","truncated":walk.truncated}),
     )
@@ -2783,6 +2820,160 @@ mod tests {
         assert_eq!(found["goals"][0]["baselines"].as_array().unwrap().len(), 2);
     }
 
+    #[test]
+    fn newer_active_unassessed_baseline_cannot_inherit_an_older_met_gate() {
+        let mut context = related_context();
+        context.records.insert(
+            "goal_active".into(),
+            fixtures::record(
+                "goal_active",
+                11,
+                RecordKind::Goal,
+                json!({
+                    "project_id":"proj_q",
+                    "scope":{"root_revision_id":"rev_root","slot_path":["schema","be"],"target_revision_id":"rev_be"},
+                    "statement":"활성 기준선 선택",
+                    "criteria":[{"criterion_id":"required","kind":"qualitative","statement":"충족","required":true}],
+                    "origin":"official","actor":"human:test"
+                }),
+            ),
+        );
+        for (id, seq, effective_from) in [
+            ("baseline_old_met", 12, "2026-01-01T00:00:00Z"),
+            ("baseline_new_unassessed", 14, "2026-02-01T00:00:00Z"),
+        ] {
+            context.records.insert(
+                id.into(),
+                fixtures::record(
+                    id,
+                    seq,
+                    RecordKind::Baseline,
+                    json!({
+                        "goal_id":"goal_active","criterion_ids":["required"],"constraints":[],
+                        "effective_from":effective_from,"actor":"human:test","reason":"adopt"
+                    }),
+                ),
+            );
+        }
+        context.records.insert(
+            "assessment_old_met".into(),
+            fixtures::record(
+                "assessment_old_met",
+                13,
+                RecordKind::Assessment,
+                json!({
+                    "root_revision_id":"rev_root","slot_path":["schema","be"],
+                    "target_revision_id":"rev_be","baseline_id":"baseline_old_met",
+                    "evidence_cutoff_seq":10,"evidence_cutoff_at":"2026-01-01T00:00:00Z",
+                    "evaluator":"human:test","rubric_version":"v1","origin":"official",
+                    "status":"met","criteria_results":[{"criterion_id":"required","status":"met"}]
+                }),
+            ),
+        );
+        context.seq = 14;
+
+        let found = goals(
+            &context,
+            &Params::from([("project_id".into(), "proj_q".into())]),
+        )
+        .unwrap();
+        let goal = &found["goals"][0];
+        assert_eq!(goal["gate_status"], "unknown");
+        assert!(goal["status"].is_null());
+        assert_eq!(
+            goal["required_criteria_status"][0]["criterion_id"],
+            "required"
+        );
+        assert!(goal["required_criteria_status"][0]["status"].is_null());
+        assert_eq!(
+            goal["baselines"][1]["baseline_id"],
+            "baseline_new_unassessed"
+        );
+        assert_eq!(goal["baselines"][1]["seq"], 14);
+        assert_eq!(
+            goal["baselines"][1]["recorded_at"],
+            "2026-09-07T00:00:14.000Z"
+        );
+    }
+
+    #[test]
+    fn proposed_goal_keeps_scope_criteria_baselines_and_forecast_without_official_gate() {
+        let mut context = related_context();
+        context.records.insert(
+            "goal_proposed".into(),
+            fixtures::record(
+                "goal_proposed",
+                11,
+                RecordKind::Goal,
+                json!({
+                    "project_id":"proj_q",
+                    "scope":{"root_revision_id":"rev_root","slot_path":["schema","be"],"target_revision_id":"rev_be"},
+                    "statement":"장애 응답 시간을 계량화한다",
+                    "criteria":[{
+                        "criterion_id":"latency","kind":"quantitative","statement":"p95 2초 이하",
+                        "metric":"response_p95_seconds","comparator":"lte","threshold":2.0,"unit":"seconds","required":true
+                    }],
+                    "origin":"ai_proposed","actor":"model:local"
+                }),
+            ),
+        );
+        context.records.insert(
+            "baseline_proposed".into(),
+            fixtures::record(
+                "baseline_proposed",
+                12,
+                RecordKind::Baseline,
+                json!({
+                    "goal_id":"goal_proposed","criterion_ids":["latency"],"constraints":[],
+                    "effective_from":"2026-01-01T00:00:00Z","actor":"model:local","reason":"forecast"
+                }),
+            ),
+        );
+        context.records.insert(
+            "assessment_proposed".into(),
+            fixtures::record(
+                "assessment_proposed",
+                13,
+                RecordKind::Assessment,
+                json!({
+                    "root_revision_id":"rev_root","slot_path":["schema","be"],
+                    "target_revision_id":"rev_be","baseline_id":"baseline_proposed",
+                    "evidence_cutoff_seq":10,"evidence_cutoff_at":"2026-01-01T00:00:00Z",
+                    "evaluator":"model:local","rubric_version":"forecast-v1","origin":"ai_proposed",
+                    "status":"met","criteria_results":[{
+                        "criterion_id":"latency","status":"met","observed_value":1.5,"note":"forecast"
+                    }]
+                }),
+            ),
+        );
+        context.seq = 13;
+
+        let found = goals(
+            &context,
+            &Params::from([("project_id".into(), "proj_q".into())]),
+        )
+        .unwrap();
+        assert!(found["goals"].as_array().unwrap().is_empty());
+        let proposed = &found["proposed_goals"][0];
+        assert_eq!(proposed["scope"]["root_revision_id"], "rev_root");
+        assert_eq!(proposed["scope"]["slot_path"], json!(["schema", "be"]));
+        assert_eq!(proposed["scope"]["target_revision_id"], "rev_be");
+        assert_eq!(proposed["scope"]["in_current_snapshot"], true);
+        assert_eq!(proposed["criteria"][0]["metric"], "response_p95_seconds");
+        assert_eq!(proposed["gate_status"], "met");
+        assert_eq!(proposed["status"], "met");
+        assert!(proposed["baselines"][0]["official_assessment"].is_null());
+        assert_eq!(
+            proposed["baselines"][0]["proposed_assessments"][0]["assessment_id"],
+            "assessment_proposed"
+        );
+        assert!(found["missing_goal_occurrences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["slot_path"] == json!(["schema", "be"])));
+    }
+
     fn stale_goal_context(new_schema_slots: Value) -> Context {
         let mut context = related_context();
         context.records.insert(
@@ -2870,6 +3061,25 @@ mod tests {
             assert_eq!(found["goals"][0]["gate_status"], "unknown");
             assert!(found["goals"][0]["baselines"][0]["official_assessment"].is_null());
         }
+    }
+
+    #[test]
+    fn old_root_goal_does_not_satisfy_a_current_occurrence_goal_requirement() {
+        let context =
+            stale_goal_context(json!([{"slot_id":"be","revision_id":"rev_be","roles":["be"]}]));
+        let found = goals(
+            &context,
+            &Params::from([("project_id".into(), "proj_q".into())]),
+        )
+        .unwrap();
+        assert_eq!(found["goals"][0]["scope"]["in_current_snapshot"], false);
+        assert!(found["missing_goal_occurrences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| {
+                row["slot_path"] == json!(["schema", "be"]) && row["revision_id"] == "rev_be"
+            }));
     }
     #[test]
     fn assessments_cannot_leak_future_evidence_into_an_earlier_effective_view() {
