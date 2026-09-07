@@ -1,0 +1,21 @@
+name: idea-db
+services:
+  idea-db:
+    build:
+      context: .
+      target: standalone
+    image: idea-db:local
+    ports:
+      - "127.0.0.1:${IDEA_DB_PORT:-8080}:8080"
+    environment:
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Run make init-env first}
+      IDEA_DB_TOKEN: ${IDEA_DB_TOKEN:-}
+    volumes:
+      - idea-data:/data
+      - idea-logs:/logs
+    stop_grace_period: 40s
+    restart: unless-stopped
+volumes:
+  idea-data:
+  idea-logs:
+

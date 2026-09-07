@@ -1,0 +1,29 @@
+.PHONY: check init-env up down logs acceptance docker-check export
+BASE_URL ?= http://127.0.0.1:8080
+PYTHON ?= python3
+
+check:
+	cargo fmt --check
+	cargo clippy --locked --all-targets -- -D warnings
+	cargo test --locked
+
+init-env:
+	sh scripts/init-env.sh
+
+up: init-env
+	docker compose up --build -d --wait --wait-timeout 180
+
+down:
+	docker compose down
+
+logs:
+	docker compose logs --tail 100 -f
+
+acceptance:
+	$(PYTHON) tests/acceptance.py --base-url $(BASE_URL)
+
+docker-check:
+	bash scripts/docker-check.sh
+
+export:
+	$(PYTHON) scripts/idea-db-client.py --url $(BASE_URL) export

@@ -1,0 +1,11 @@
+/target/
+.env
+.env.*
+!.env.example
+/backups/
+/test-results/
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+
