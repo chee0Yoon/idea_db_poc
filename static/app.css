@@ -39,6 +39,14 @@ dialog { padding:0; border:0; background:transparent; max-width:min(620px,calc(1
 .goal-lane p { margin:.2rem 0; font-size:.77rem; line-height:1.48; }
 .goal-numeric { margin:.35rem 0 0; padding-left:1rem; font-size:.76rem; }
 .goal-history { margin:.5rem 0 0; padding:.5rem 0 0; border-top:1px dashed var(--line); font-size:.75rem; }
+.project-goal-progress { display:grid; gap:.5rem; margin-top:.75rem; }
+.goal-progress { margin:.55rem 0; padding:.7rem; border:1px solid #a9c9c2; border-radius:7px; background:#eef7f3; }
+.goal-progress-statement { margin:0; font-size:.84rem; font-weight:700; }
+.goal-progress-headline { margin:.18rem 0; color:#174d44; font-size:1.18rem; font-weight:800; }
+.goal-progress-meta { margin:.15rem 0 .45rem; color:var(--muted); font-size:.72rem; line-height:1.45; }
+.goal-progress-meter { height:.62rem; overflow:hidden; border-radius:999px; background:#d2e3de; }.goal-progress-meter span { display:block; height:100%; background:var(--accent); }
+.goal-progress-criteria { margin:.55rem 0 0; padding-left:1rem; font-size:.76rem; }.goal-progress-criteria li { display:grid; gap:.16rem; margin:.42rem 0; }.goal-progress-criteria strong { color:var(--ink); }.goal-progress-criteria span { line-height:1.4; }
+.goal-progress-details { margin-top:.5rem; color:var(--muted); font-size:.72rem; line-height:1.45; }.goal-progress-details summary { cursor:pointer; }.goal-progress-details p { margin:.35rem 0 0; }
 @media (max-width:560px) { .diff-copy { grid-template-columns:1fr; } }
 
 .goal-state { max-height:none; }
@@ -65,3 +73,15 @@ dialog { padding:0; border:0; background:transparent; max-width:min(620px,calc(1
 
 .record-actions { flex-shrink:0; }
 .record-actions .button { white-space:nowrap; min-width:max-content; }
+
+.version-controls { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; margin:12px 0; }
+.version-controls label { display:grid; gap:6px; min-width:0; }
+.version-controls select { width:100%; min-width:0; }
+.version-chain { display:flex; flex-wrap:wrap; gap:8px; padding:8px 0; }
+.version-chain button { border:1px solid var(--line,#d8d0c2); padding:6px; text-align:left; max-width:100%; }
+.version-chain button[aria-pressed="true"] { background:#dcebe7; }
+.version-local-history { margin:12px 0; }
+.version-local-history ol { max-height:380px; overflow:auto; padding-left:22px; }
+.version-local-history li { padding:10px 0; border-bottom:1px solid #ded7ca; }
+.version-activity { display:block; text-align:left; margin:6px 0; }
+@media(max-width:860px) { .version-controls {grid-template-columns:1fr;} }

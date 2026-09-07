@@ -1353,6 +1353,141 @@ fn validate_assessment(a: &AssessmentData, d: &str, lk: &Overlay, issues: &mut V
                 "a criterion can have only one result per assessment",
             ));
         }
+
+        let Some(estimate) = &res.progress_estimate else {
+            continue;
+        };
+        let estimate_path = format!("{d}.criteria_results[{i}].progress_estimate");
+        if a.origin != ProposalOrigin::AiProposed {
+            issues.push(Issue::new(
+                estimate_path.clone(),
+                "official_progress_estimate",
+                "progress estimates are allowed only on ai_proposed assessments",
+            ));
+        }
+        if !estimate.percent.is_finite() || !(0.0..=100.0).contains(&estimate.percent) {
+            issues.push(Issue::new(
+                format!("{estimate_path}.percent"),
+                "invalid_progress_estimate",
+                "progress estimate percent must be finite and between 0 and 100",
+            ));
+        }
+        if a.rubric_version == "goal-progress-milestones-v1"
+            && ![0.0, 20.0, 40.0, 60.0, 80.0, 100.0].contains(&estimate.percent)
+        {
+            issues.push(Issue::new(
+                format!("{estimate_path}.percent"),
+                "invalid_progress_milestone",
+                "goal-progress-milestones-v1 permits only 0, 20, 40, 60, 80, or 100",
+            ));
+        }
+        check_text(
+            issues,
+            &format!("{estimate_path}.rationale"),
+            &estimate.rationale,
+            1,
+            2000,
+        );
+        if estimate.rationale.trim().is_empty() {
+            issues.push(Issue::new(
+                format!("{estimate_path}.rationale"),
+                "invalid_progress_estimate",
+                "progress estimate rationale must contain non-whitespace text",
+            ));
+        }
+        if estimate.evidence_record_ids.is_empty() {
+            issues.push(Issue::new(
+                format!("{estimate_path}.evidence_record_ids"),
+                "progress_estimate_missing_evidence",
+                "progress estimates need at least one evidence record",
+            ));
+        }
+        if estimate.evidence_record_ids.len() > 64 {
+            issues.push(Issue::new(
+                format!("{estimate_path}.evidence_record_ids"),
+                "limit_exceeded",
+                "progress estimate evidence exceeds 64 records",
+            ));
+        }
+        let mut evidence_ids = HashSet::new();
+        for (j, evidence_id) in estimate.evidence_record_ids.iter().enumerate() {
+            let evidence_path = format!("{estimate_path}.evidence_record_ids[{j}]");
+            if !evidence_ids.insert(evidence_id.as_str()) {
+                issues.push(Issue::new(
+                    evidence_path.clone(),
+                    "duplicate_evidence_record",
+                    "a progress estimate may cite an evidence record only once",
+                ));
+            }
+            let Some(evidence) = need(
+                lk,
+                issues,
+                &evidence_path,
+                evidence_id,
+                &[
+                    RecordKind::Capture,
+                    RecordKind::Revision,
+                    RecordKind::Observation,
+                ],
+            ) else {
+                continue;
+            };
+            let belongs = match &evidence.data {
+                RecordData::Capture(capture) => {
+                    capture.project_id.as_deref() == Some(goal.project_id.as_str())
+                }
+                RecordData::Revision(_) => {
+                    graph::origin_project(lk, evidence).as_deref() == Some(goal.project_id.as_str())
+                }
+                RecordData::Observation(observation) => observation.project_id == goal.project_id,
+                _ => false,
+            };
+            if !belongs {
+                issues.push(Issue::new(
+                    evidence_path.clone(),
+                    "progress_evidence_project_mismatch",
+                    "progress estimate evidence must belong to the assessed Project",
+                ));
+            }
+            if evidence.seq > a.evidence_cutoff_seq {
+                issues.push(Issue::new(
+                    evidence_path.clone(),
+                    "evidence_after_cutoff",
+                    format!(
+                        "evidence was recorded at seq {}, past cutoff {}",
+                        evidence.seq, a.evidence_cutoff_seq
+                    ),
+                ));
+            }
+            if let (Some(cutoff), Some(recorded)) =
+                (&cutoff_at, util::parse_rfc3339(&evidence.recorded_at))
+            {
+                if &util::to_utc_key(recorded) > cutoff {
+                    issues.push(Issue::new(
+                        evidence_path.clone(),
+                        "evidence_after_cutoff",
+                        format!(
+                            "evidence was recorded at {}, past cutoff {}",
+                            evidence.recorded_at, a.evidence_cutoff_at
+                        ),
+                    ));
+                }
+            }
+            if let (Some(cutoff), Some(observation)) = (&cutoff_at, evidence.as_observation()) {
+                if let Some(occurred) = util::parse_rfc3339(&observation.occurred_at) {
+                    if &util::to_utc_key(occurred) > cutoff {
+                        issues.push(Issue::new(
+                            evidence_path,
+                            "evidence_after_cutoff",
+                            format!(
+                                "observation occurred at {}, past cutoff {}",
+                                observation.occurred_at, a.evidence_cutoff_at
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
     }
     for c in goal.criteria.iter().filter(|c| c.required) {
         if allowed.contains(c.criterion_id.as_str()) && !covered.contains(c.criterion_id.as_str()) {

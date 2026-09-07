@@ -1814,6 +1814,9 @@ pub fn goals(ctx: &Context, p: &Params) -> ApiResult<Value> {
                     "rubric_version": assessment.rubric_version,
                     "recorded_at": assessment_record.recorded_at,
                     "evidence_cutoff_seq": assessment.evidence_cutoff_seq,
+                    "evidence_cutoff_at": assessment.evidence_cutoff_at,
+                    "evidence_observation_ids": assessment.evidence_observation_ids,
+                    "note": assessment.note,
                     "scope_match": "exact",
                     "stale": false,
                     "criteria_results": assessment.criteria_results,
@@ -2941,7 +2944,8 @@ mod tests {
                     "evidence_cutoff_seq":10,"evidence_cutoff_at":"2026-01-01T00:00:00Z",
                     "evaluator":"model:local","rubric_version":"forecast-v1","origin":"ai_proposed",
                     "status":"met","criteria_results":[{
-                        "criterion_id":"latency","status":"met","observed_value":1.5,"note":"forecast"
+                        "criterion_id":"latency","status":"met","observed_value":1.5,"note":"forecast",
+                        "progress_estimate":{"percent":20.0,"rationale":"scoped plan exists","evidence_record_ids":["rev_be"]}
                     }]
                 }),
             ),
@@ -2962,6 +2966,15 @@ mod tests {
         assert_eq!(proposed["criteria"][0]["metric"], "response_p95_seconds");
         assert_eq!(proposed["gate_status"], "met");
         assert_eq!(proposed["status"], "met");
+        assert_eq!(
+            proposed["baselines"][0]["proposed_assessments"][0]["criteria_results"][0]
+                ["progress_estimate"]["percent"],
+            20.0
+        );
+        assert_eq!(
+            proposed["baselines"][0]["proposed_assessments"][0]["evidence_cutoff_at"],
+            "2026-01-01T00:00:00Z"
+        );
         assert!(proposed["baselines"][0]["official_assessment"].is_null());
         assert_eq!(
             proposed["baselines"][0]["proposed_assessments"][0]["assessment_id"],

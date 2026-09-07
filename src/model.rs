@@ -496,6 +496,16 @@ pub struct CriterionResult {
     pub observed_value: Option<f64>,
     #[serde(default)]
     pub note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_estimate: Option<ProgressEstimate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProgressEstimate {
+    pub percent: f64,
+    pub rationale: String,
+    pub evidence_record_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -826,6 +836,11 @@ impl StoredRecord {
                 out.push(d.target_revision_id.clone());
                 out.push(d.baseline_id.clone());
                 out.extend(d.evidence_observation_ids.iter().cloned());
+                for result in &d.criteria_results {
+                    if let Some(estimate) = &result.progress_estimate {
+                        out.extend(estimate.evidence_record_ids.iter().cloned());
+                    }
+                }
             }
             RecordData::Link(d) => {
                 out.push(d.from_id.clone());
@@ -1036,6 +1051,41 @@ mod tests {
         assert!(!NodeKind::Core.may_contain(NodeKind::Schema));
         assert!(!NodeKind::Core.may_contain(NodeKind::Project));
         assert!(!NodeKind::Idea.may_contain(NodeKind::Idea));
+    }
+
+    #[test]
+    fn absent_progress_estimate_is_omitted_from_serialized_criterion_result() {
+        let result: CriterionResult = serde_json::from_value(json!({
+            "criterion_id": "done", "status": "unknown", "note": ""
+        }))
+        .unwrap();
+        let value = serde_json::to_value(result).unwrap();
+        assert!(!value.as_object().unwrap().contains_key("progress_estimate"));
+    }
+
+    #[test]
+    fn progress_evidence_participates_in_the_record_reference_closure() {
+        let data = RecordData::parse(
+            RecordKind::Assessment,
+            json!({
+                "root_revision_id":"rev_root","slot_path":[],"target_revision_id":"rev_target",
+                "baseline_id":"baseline_1","evidence_cutoff_seq":10,
+                "evidence_cutoff_at":"2026-01-01T00:00:00Z","evaluator":"model:local",
+                "rubric_version":"goal-progress-milestones-v1","origin":"ai_proposed",
+                "status":"unknown","criteria_results":[{
+                    "criterion_id":"planned","status":"unknown",
+                    "progress_estimate":{"percent":20.0,"rationale":"plan exists","evidence_record_ids":["rev_plan"]}
+                }]
+            }),
+        )
+        .unwrap();
+        let record = StoredRecord {
+            id: "assessment_1".into(),
+            seq: 11,
+            recorded_at: "2026-01-01T00:00:00.000Z".into(),
+            data,
+        };
+        assert!(record.refs().contains(&"rev_plan".to_string()));
     }
 
     #[test]

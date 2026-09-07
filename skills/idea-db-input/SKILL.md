@@ -18,3 +18,13 @@ Read MCP resources `idea-db://contracts/mcp-intake` and `idea-db://contracts/dom
 8. Call MCP `idea_upload_preview` with the locally structured package. It generates local embeddings, returns related candidates and stages the prepared packet. Inspect `review_records`, source coverage and mappings; never equate similarity with identity. Present its diff/errors. Review semantic identity, source fidelity, baseline changes and exact occurrences as a batch. Apply only the accepted `upload_id` and `prepared_digest` through `idea_upload_apply`. Discard an abandoned handle with `idea_upload_discard {upload_id}`; its retained audit record no longer consumes pending capacity. Never round-trip raw vectors through model text. All CRUD uses MCP; the dashboard is read-only. On stale head, refresh context and create a new reviewed package; do not force an overwrite.
 
 The `scripts/idea-db-client.py draft` helper invokes only an explicitly supplied local command and saves its JSON output. It performs no automatic application. With no LLM, a human can prepare the same package and use the same MCP validate/preview/apply tools.
+
+When the user requests expected completion, do not stop at target thresholds and
+unknown measured values. Assess each level's own adopted required criteria from
+current Ideas, planning, implementation and scoped evidence. Add an AI-only
+`progress_estimate` per criterion with percent, rationale, evidence IDs and the
+assessment's rubric/cutoff. Use the documented milestone rubric when appropriate;
+explain which work is missing and why prior evidence does or does not apply.
+Unknown estimates stay absent, zero means an explicit evidenced assessment, and
+measurements remain distinct. Write a parent's assessment against its own criteria,
+not a count-based average of children. Show proposals and estimates for review.

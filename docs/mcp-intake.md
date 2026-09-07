@@ -68,3 +68,14 @@ subsequently updated. Apply and retries make no model request. Hybrid search use
 the active profile and reports exact matching index coverage; an old model profile
 is never silently compared with a new one. Source origin/model/actor are client
 provenance claims, not authenticated human identity.
+
+When the user asks for expected goals and completion, inspect each Project, Schema,
+and recursive Core occurrence for its own goal, not only descendant goals. Locally
+draft missing goals and assess their adopted required criteria against the current
+Ideas, plan, implementation and observations. Store AI estimates as
+`criteria_results[].progress_estimate` with percent, rationale and scoped evidence
+record IDs, plus assessment rubric and cutoffs. A missing observed performance value
+does not prohibit a reasoned milestone estimate. Keep official statuses unchanged,
+make missing estimates explicit, and never manufacture measurements or carry old
+product validation into new goals without applicability review. Use the same
+capture → validate/preview → review → apply flow; the dashboard never calls the AI.

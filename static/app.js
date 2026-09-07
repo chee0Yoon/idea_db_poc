@@ -380,7 +380,53 @@
     holder.append(block);
   }
 
-  function renderVersionDiff(record, compareId = null) {
+  function versionLabel(record) {
+    return `${text(record?.data?.body, titleForId(record?.id, '버전')).split('\n')[0].slice(0, 72)} · ${recordTime(record)}`;
+  }
+
+  function appendVersionHistory(holder, selected, history, cutoff, compareId, afterId) {
+    const controls = document.createElement('div'); controls.className = 'version-controls';
+    const beforeLabel = document.createElement('label'); beforeLabel.textContent = '비교 시작 버전';
+    const before = document.createElement('select'); before.id = 'version-compare-from';
+    const endLabel = document.createElement('label'); endLabel.textContent = '비교 끝 버전';
+    const after = document.createElement('select'); after.id = 'version-compare-to';
+    const target = history.revisions.find(r => r.id === afterId) || selected;
+    const prior = history.revisions.filter(r => Number(r.seq) < Number(target.seq));
+    const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = prior.length ? '계보에서 비교할 버전 선택' : '최초 버전'; before.append(placeholder);
+    for (const record of prior) { const option = document.createElement('option'); option.value = record.id; option.textContent = versionLabel(record); before.append(option); }
+    for (const record of history.revisions) { const option = document.createElement('option'); option.value = record.id; option.textContent = versionLabel(record); after.append(option); }
+    before.value = prior.some(r => r.id === compareId) ? compareId : ''; after.value = target.id;
+    before.addEventListener('change', () => renderVersionDiff(selected, before.value || null, after.value));
+    after.addEventListener('change', () => renderVersionDiff(selected, null, after.value));
+    beforeLabel.append(before); endLabel.append(after); controls.append(beforeLabel, endLabel); holder.append(controls);
+    const chain = document.createElement('div'); chain.className = 'version-chain'; chain.setAttribute('aria-label', '이 항목의 버전 계보');
+    history.revisions.forEach((revision, index) => {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'inline-button';
+      button.textContent = `${index + 1}. ${text(revision.data.body, titleForId(revision.id, '버전')).split('\n')[0].slice(0, 44)}`;
+      button.setAttribute('aria-pressed', String(revision.id === target.id));
+      button.addEventListener('click', () => renderVersionDiff(selected, null, revision.id)); chain.append(button);
+    }); holder.append(chain);
+    const detail = document.createElement('details'); detail.className = 'version-local-history';
+    const heading = document.createElement('summary'); heading.textContent = `이 항목의 방향과 기록 · ${history.revisions.length}개 버전${history.truncated ? ' · 계보 탐색 한도 도달' : ''}`; detail.append(heading);
+    const timeline = document.createElement('ol');
+    for (const revision of history.revisions) {
+      const item = document.createElement('li');
+      const heading = document.createElement('strong'); heading.textContent = versionLabel(revision); item.append(heading);
+      const delta = window.IdeaDashboardModel.revisionDiff(state.exportRecords, revision.id);
+      const reason = document.createElement('p'); reason.textContent = delta.reason ? `방향 변경 이유: ${delta.reason}` : '별도로 기록된 변경 이유 없음'; item.append(reason);
+      const activity = window.IdeaVersionHistory.revisionActivity(state.exportRecords, revision.id, cutoff);
+      if (!activity.length) { const empty = document.createElement('p'); empty.textContent = '연결된 원문·관측·평가 기록 없음'; item.append(empty); }
+      for (const record of activity) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'inline-button version-activity';
+        button.textContent = `${kindLabel(record.kind)} · ${titleForRecord(record, '연결된 기록')} · ${recordTime(record)}`;
+        button.addEventListener('click', () => openLinkedRecord(record.id)); item.append(button);
+      }
+      timeline.append(item);
+    }
+    detail.append(timeline); holder.append(detail);
+  }
+
+  function renderVersionDiff(record, compareId = null, afterId = null) {
     const section = $('version-diff');
     const holder = $('version-diff-content');
     clear(holder);
@@ -388,11 +434,16 @@
       section.hidden = true;
       return;
     }
-    const diff = window.IdeaDashboardModel.revisionDiff(state.exportRecords, record.id, compareId || undefined);
+    const cutoffValue = state.goalPayload?.scope?.known_seq ?? state.snapshot?.selected_by?.known_seq;
+    const cutoff = cutoffValue == null ? Infinity : Number(cutoffValue);
+    const history = window.IdeaVersionHistory?.revisionHistory(state.exportRecords, record.id, cutoff);
+    const target = history?.revisions.find(revision => revision.id === afterId) || record;
+    const diff = window.IdeaDashboardModel.revisionDiff(state.exportRecords, target.id, compareId || undefined);
     section.hidden = false;
+    if (history?.revisions.length) appendVersionHistory(holder, record, history, cutoff, diff.compare_revision_id, target.id);
     const summary = document.createElement('p');
     summary.className = 'diff-status';
-    if (diff.status === 'ready') summary.textContent = `이전 버전과 비교합니다.${diff.reason ? ` 변경 이유: ${diff.reason}` : ''}`;
+    if (diff.status === 'ready') summary.textContent = `${titleForId(diff.before.id, '선택한 시작 버전')} → ${titleForId(diff.after.id, '선택한 끝 버전')} 비교.${diff.reason ? ` 끝 버전의 변경 이유: ${diff.reason}` : ''}`;
     else if (diff.status === 'ambiguous') summary.textContent = '이전 버전 후보가 여럿입니다. 실제 계보를 선택해야 비교를 표시합니다.';
     else summary.textContent = '비교할 이전 버전이 확정되지 않았습니다.';
     holder.append(summary);
@@ -406,7 +457,7 @@
         button.type = 'button';
         button.className = 'occurrence-button';
         button.textContent = `${titleForId(id, '이전 버전')} · ${recordTime(recordMap().get(id))} 비교`;
-        button.addEventListener('click', () => renderVersionDiff(record, id));
+        button.addEventListener('click', () => renderVersionDiff(record, id, target.id));
         candidates.append(button);
       });
       holder.append(candidates);
@@ -420,7 +471,7 @@
     let prefix = 0, suffix = 0;
     while (prefix < beforeChars.length && prefix < afterChars.length && beforeChars[prefix] === afterChars[prefix]) prefix++;
     while (suffix < beforeChars.length - prefix && suffix < afterChars.length - prefix && beforeChars.at(-1 - suffix) === afterChars.at(-1 - suffix)) suffix++;
-    [['− 이전 본문', beforeChars, 'del'], ['+ 현재 본문', afterChars, 'ins']].forEach(([label, chars, tag]) => {
+    [['− 비교 시작 본문', beforeChars, 'del'], ['+ 비교 끝 본문', afterChars, 'ins']].forEach(([label, chars, tag]) => {
       const block = document.createElement('div');
       const heading = document.createElement('h4');
       heading.textContent = label;
@@ -870,9 +921,54 @@
         const path = asArray(scope.slot_path);
         return (scope.root_revision_id || payloadRoot) === root
           && (proposed ? scope.in_current_snapshot !== false : scope.in_current_snapshot === true)
-          && path[0] === schema.slot_path?.[0] && (!ownOnly || path.length === schema.slot_path.length);
+          && path[0] === schema.slot_path?.[0] && (!ownOnly || (path.length === schema.slot_path.length && path.every((part, index) => part === schema.slot_path[index])));
       })
       .map((goal) => text(goal.statement, '목표 문장 없음'));
+  }
+
+  function appendProgressGoal(holder, progress, compact = false) {
+    const block = document.createElement('section');
+    block.className = 'goal-progress';
+    if (progress.goal_id) block.dataset.goalId = progress.goal_id;
+    block.dataset.origin = 'ai_proposed';
+    const statement = document.createElement('p');
+    statement.className = 'goal-progress-statement';
+    statement.textContent = `목표: ${text(progress.statement, '목표 문장 없음')}`;
+    const headline = document.createElement('p');
+    headline.className = 'goal-progress-headline goal-progress-percent';
+    headline.textContent = progress.percent === null ? 'AI 예상 달성률: 산정 불가' : `AI 예상 달성률 약 ${Math.round(progress.percent)}%`;
+    block.append(statement, headline);
+    const coverage = document.createElement('p');
+    coverage.className = 'goal-progress-meta';
+    coverage.textContent = `필수 기준 추정 ${progress.estimated_count}/${progress.required_count}개${progress.percent === null ? ' · 모든 필수 기준의 유효한 추정이 있어야 계산합니다.' : ' · 필수 기준을 같은 비중으로 평균한 현재 계획·구현·검증 이정표입니다.'}`;
+    block.append(coverage);
+    if (progress.percent !== null) {
+      const meter = document.createElement('div');
+      meter.className = 'goal-progress-meter'; meter.setAttribute('role', 'progressbar');
+      meter.setAttribute('aria-label', `${text(progress.statement, '목표')} AI 예상 달성률`); meter.setAttribute('aria-valuemin', '0'); meter.setAttribute('aria-valuemax', '100'); meter.setAttribute('aria-valuenow', String(progress.percent));
+      const fill = document.createElement('span'); fill.style.width = `${progress.percent}%`; meter.append(fill); block.append(meter);
+    }
+    const list = document.createElement('ul'); list.className = 'goal-progress-criteria';
+    asArray(progress.criteria).forEach((criterion) => {
+      const item = document.createElement('li'); item.className = 'criterion-progress'; item.dataset.criterionId = criterion.criterion_id;
+      const title = document.createElement('strong'); title.textContent = `${text(criterion.statement, criterion.criterion_id)} · ${criterion.valid ? `${Math.round(criterion.percent)}%` : '추정 없음'}`;
+      title.className = 'criterion-progress-percent';
+      item.append(title);
+      if (criterion.rationale) { const rationale = document.createElement('span'); rationale.className = 'progress-rationale'; rationale.textContent = criterion.rationale; item.append(rationale); }
+      asArray(criterion.evidence_record_ids).forEach((id) => { const evidence = document.createElement('button'); evidence.type = 'button'; evidence.className = 'inline-button progress-evidence'; evidence.textContent = `근거: ${titleForId(id, '근거 기록')}`; evidence.addEventListener('click', () => openLinkedRecord(id)); item.append(evidence); });
+      list.append(item);
+    });
+    if (!compact && asArray(progress.criteria).length) block.append(list);
+    const provenance = progress.assessment || {};
+    const details = document.createElement('details'); details.className = 'goal-progress-details';
+    const summary = document.createElement('summary'); summary.textContent = 'AI 예상 산정 기준과 근거 범위';
+    const copy = document.createElement('p');
+    const milestones = provenance.rubric_version === 'goal-progress-milestones-v1'
+      ? '0 계획 없음, 20 원자 계획, 40 적용 가능한 상세 설계, 60 적용 가능한 구현, 80 범위 내 부분 검증, 100 기준 검증 완료.'
+      : text(provenance.note, '저장된 AI 평가 설명이 없습니다.');
+    copy.textContent = `Rubric ${text(provenance.rubric_version, '미기록')} · ${text(provenance.evaluator, '평가자 미기록')} · 근거기록기준 ${text(provenance.evidence_cutoff_seq, '—')} / ${text(provenance.evidence_cutoff_at, '—')}. ${milestones} 실제 목표 지표 측정과 공식 충족 판정은 별도입니다.`;
+    if (compact && asArray(progress.criteria).length) { const criterionCopy = document.createElement('p'); criterionCopy.textContent = progress.criteria.map((criterion) => `${text(criterion.statement, criterion.criterion_id)} ${criterion.valid ? `${Math.round(criterion.percent)}%` : '추정 없음'}${criterion.rationale ? ` · ${criterion.rationale}` : ''}`).join(' / '); details.append(criterionCopy); }
+    details.prepend(summary); details.append(copy); block.append(details); holder.append(block);
   }
 
   function appendGoalLane(holder, title, lane, proposed = false, statements = []) {
@@ -895,22 +991,32 @@
       statement.textContent = `목표: ${statements.join(' · ')}`;
       block.append(statement);
     }
+    // A schema card may have several direct goals. Show each estimate; never average goals.
+    asArray(lane.progress_goals).filter((progress) => progress.own).forEach((progress) => appendProgressGoal(block, progress));
     const coverage = document.createElement('p');
     coverage.textContent = `직접 목표 ${Number(lane.own) || 0}건 · 하위 항목 목표 ${Number(lane.descendant) || 0}건`;
     block.append(coverage);
-    const required = lane.required || {};
+    const required = lane.own_required || lane.required || {};
     const criteria = document.createElement('p');
     criteria.textContent = `필수 기준 ${Number(required.total) || 0}개 · 충족 ${Number(required.met) || 0} · 미충족 ${Number(required.unmet) || 0} · 확인 필요 ${Number(required.unknown) || 0}${Number(required.disputed) ? ` · 이견 ${required.disputed}` : ''}${Number(required.recheck) ? ` · 재확인 ${required.recheck}` : ''}`;
     block.append(criteria);
-    if (asArray(lane.numeric).length) {
+    if (!proposed && Number(required.total)) {
+      const rate = document.createElement('p'); rate.className = 'official-completion-rate';
+      const evaluated = Number(required.met || 0) + Number(required.unmet || 0);
+      rate.textContent = evaluated === Number(required.total)
+        ? `실제 기준 충족률 ${Math.round(Number(required.met || 0) / Number(required.total) * 100)}% · 이 목표의 필수 기준 ${evaluated}개 판정 기준`
+        : `실제 기준 충족률 미확정 · 필수 기준 판정 ${evaluated}/${required.total}개`;
+      block.append(rate);
+    }
+    if (asArray(lane.own_numeric || lane.numeric).length) {
       const values = document.createElement('ul');
       values.className = 'goal-numeric';
-      asArray(lane.numeric).forEach((criterion) => {
+      asArray(lane.own_numeric || lane.numeric).forEach((criterion) => {
         const item = document.createElement('li');
         const measured = criterion.observed_value === null || criterion.observed_value === undefined ? '측정 없음' : metricValue(criterion.observed_value, criterion.unit);
         const isRatio = String(criterion.unit || '').toLowerCase().includes('ratio') || String(criterion.unit || '').includes('비율');
         const threshold = criterion.threshold === null || criterion.threshold === undefined ? '기준 미설정' : `${comparatorLabel(criterion.comparator)} ${metricValue(criterion.threshold, criterion.unit)}${criterion.unit && !isRatio ? ` ${criterion.unit}` : ''}`;
-        item.textContent = `${text(criterion.statement, '정량 기준')} · ${proposed ? 'AI 추정값' : '실제 측정'} ${measured} · ${proposed ? '예상 기준' : '목표 기준'} ${threshold} · ${goalStatusLabel(criterion.status)}`;
+        item.textContent = `${text(criterion.statement, '정량 기준')} · ${proposed ? '기준 지표 값' : '실제 측정'} ${measured} · 목표 기준 ${threshold} · ${goalStatusLabel(criterion.status)}`;
         values.append(item);
       });
       block.append(values);
@@ -919,7 +1025,7 @@
   }
 
   function laneSummary(lane) {
-    const required = lane?.required || {};
+    const required = lane?.own_required || lane?.required || {};
     const total = Number(required.total) || 0;
     if (!total) return '기준 미설정';
     return `${Number(required.met) || 0}/${total} · 미측정 ${Number(required.unknown) || 0}`;
@@ -947,8 +1053,13 @@
     const latest = records.slice().sort((a, b) => Number(b.seq) - Number(a.seq))[0];
     const changes = records.filter((record) => record.kind === 'head_change').length;
     title.textContent = rootTitle;
+    const rootProgress = window.IdeaDashboardModel?.occurrenceGoals
+      ? [...asArray(window.IdeaDashboardModel.occurrenceGoals(state.exportRecords, state.snapshot, payload, []).official.progress_goals), ...asArray(window.IdeaDashboardModel.occurrenceGoals(state.exportRecords, state.snapshot, payload, []).ai_proposed.progress_goals)].filter((progress) => progress.own)
+      : [];
     meta.textContent = `${state.rootRevisionId || state.knownSeq !== null ? '선택한 시점 기록' : '최신 서버 기록'} ${recordTime(latest)} · 구성 변경 ${changes}건 · 스키마 ${schemas.length}개`;
     clear(rows);
+    const projectGoalProgress = $('project-goal-progress');
+    if (projectGoalProgress) { clear(projectGoalProgress); rootProgress.forEach((progress) => appendProgressGoal(projectGoalProgress, progress, true)); }
     schemas.forEach((schema) => {
       const button = document.createElement('button');
       button.type = 'button';
@@ -956,12 +1067,14 @@
       const heading = document.createElement('strong');
       heading.textContent = schema.title || '제목 없는 스키마';
       const goal = document.createElement('span');
+      const directProgress = [...asArray(schema.official.progress_goals), ...asArray(schema.ai_proposed.progress_goals)].filter((progress) => progress.own);
       const officialStatements = scopedGoalStatements(schema, payload, false, true);
       const aiStatements = scopedGoalStatements(schema, payload, true, true);
-      goal.textContent = officialStatements[0] || aiStatements[0] || '현재 목표가 설정되지 않았습니다.';
+      goal.textContent = directProgress.length ? directProgress.map((progress) => text(progress.statement, '목표')).join(' / ') : (officialStatements[0] || aiStatements[0] || '현재 목표가 설정되지 않았습니다.');
       const status = document.createElement('span');
       status.textContent = `${schema.official.own ? '공식 기준' : schema.official.descendant ? '하위 공식 기준' : '공식'} ${laneSummary(schema.official)} · AI ${laneSummary(schema.ai_proposed)}`;
       button.append(heading, goal, status);
+      directProgress.forEach((progress) => { const percent = document.createElement('span'); percent.className = 'schema-progress-percent'; percent.textContent = progress.percent === null ? 'AI 예상 산정 불가' : `AI 예상 달성률 약 ${Math.round(progress.percent)}%`; button.append(percent); });
       button.addEventListener('click', () => selectSchema(schema));
       rows.append(button);
     });
@@ -980,7 +1093,15 @@
     const schemas = model && Array.isArray(state.exportRecords) ? model.schemaGoals(state.exportRecords, state.snapshot, payload) : [];
     renderProjectSummary(schemas, payload);
     const selectedPath = asArray(state.selected?.occurrence?.slot_path);
-    const visible = selectedPath.length ? schemas.filter((schema) => schema.slot_path?.[0] === selectedPath[0]) : schemas;
+    const selectedRevision = state.selected?.record?.id;
+    // A selected Core (or Project root) gets only its exact own-goal card; its parent Schema is not a proxy.
+    const visible = state.selected?.occurrence && model?.occurrenceGoals
+      ? [{ ...model.occurrenceGoals(state.exportRecords, state.snapshot, payload, selectedPath), title: titleForId(selectedRevision, selectedPath.length ? '선택한 구성 항목' : '프로젝트 목표'), slot_path: selectedPath, historical_references: [] }]
+      : schemas;
+    const panelTitle = $('goal-panel-title');
+    if (panelTitle) panelTitle.textContent = state.selected?.occurrence
+      ? `${selectedPath.length ? '프로젝트 / ' : '프로젝트 / '}${titleForId(selectedRevision, selectedPath.length ? '선택한 구성 항목' : '프로젝트')} 목표와 달성률`
+      : '스키마별 목표와 달성률';
     if (!visible.length) {
       holder.className = 'goal-state muted compact';
       holder.textContent = state.snapshot.root_revision_id ? '이 구성에는 표시할 스키마별 목표가 없습니다. 현재 공식 목표가 설정되지 않았을 수 있습니다.' : '이 시점에는 구성별 목표를 계산할 수 없습니다.';
@@ -993,8 +1114,8 @@
       const heading = document.createElement('h3');
       heading.textContent = schema.title || '제목 없는 스키마';
       card.append(heading);
-      appendGoalLane(card, '공식 목표와 실제 측정', schema.official, false, scopedGoalStatements(schema, payload, false));
-      appendGoalLane(card, 'AI 제안과 예상 기준', schema.ai_proposed, true, scopedGoalStatements(schema, payload, true));
+      appendGoalLane(card, '공식 목표와 실제 측정', schema.official, false, scopedGoalStatements(schema, payload, false, true));
+      appendGoalLane(card, 'AI 제안과 예상 기준', schema.ai_proposed, true, scopedGoalStatements(schema, payload, true, true));
       if (asArray(schema.historical_references).length) {
         const historical = document.createElement('div');
         historical.className = 'goal-history';

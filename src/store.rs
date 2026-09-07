@@ -422,6 +422,20 @@ fn rel_batches(records: &[StoredRecord]) -> Vec<(&'static str, Vec<Value>)> {
                 for obs in &d.evidence_observation_ids {
                     add("EVIDENCE", rel(&rec.id, obs, json!({})));
                 }
+                for result in &d.criteria_results {
+                    if let Some(estimate) = &result.progress_estimate {
+                        for evidence in &estimate.evidence_record_ids {
+                            add(
+                                "EVIDENCE",
+                                rel(
+                                    &rec.id,
+                                    evidence,
+                                    json!({"criterion_id": result.criterion_id, "evidence_kind": "progress_estimate"}),
+                                ),
+                            );
+                        }
+                    }
+                }
             }
             RecordData::Link(d) => {
                 add(

@@ -36,4 +36,19 @@ assert.equal(schemas[0].ai_proposed.required.unknown, 1);
 assert.equal(schemas[0].historical_references[0].goal_id, "g_old");
 assert.deepEqual(schemas[0].historical_references.map((goal) => goal.goal_id), ["g_old"]);
 assert.deepEqual(schemas[1].historical_references.map((goal) => goal.goal_id), ["g_other"]);
+// A progress percentage exists only when every adopted required criterion has a valid AI estimate.
+const progressPayload = { scope: { root_revision_id: "root" }, goals: [{ goal_id: "own", statement: "own goal", scope: { slot_path: ["biz"], in_current_snapshot: true }, criteria: [{ criterion_id: "a", required: true, statement: "A" }, { criterion_id: "b", required: true, statement: "B" }], baselines: [{ criterion_ids: ["a", "b"], superseded_by: null, proposed_assessments: [{ assessment_id: "ai-own", origin: "ai_proposed", criteria_results: [{ criterion_id: "a", progress_estimate: { percent: 0, rationale: "not started", evidence_record_ids: ["g_old"] } }, { criterion_id: "b", progress_estimate: { percent: 40, rationale: "designed", evidence_record_ids: [] } }] }] }] }, { goal_id: "child", statement: "child goal", scope: { slot_path: ["biz", "leaf"], in_current_snapshot: true }, criteria: [{ criterion_id: "c", required: true }], baselines: [{ criterion_ids: ["c"], superseded_by: null, proposed_assessments: [{ origin: "ai_proposed", criteria_results: [{ criterion_id: "c", progress_estimate: { percent: 20, rationale: "plan", evidence_record_ids: [] } }] }] }] }, { goal_id: "unknown", scope: { slot_path: ["other"], in_current_snapshot: true }, criteria: [{ criterion_id: "d", required: true }], baselines: [{ criterion_ids: ["d"], superseded_by: null, proposed_assessments: [{ origin: "ai_proposed", criteria_results: [{ criterion_id: "d", progress_estimate: { rationale: "unknown", evidence_record_ids: [] } }] }] }] }] };
+const ownOccurrence = model.occurrenceGoals(records, snapshot, progressPayload, ["biz"]);
+assert.equal(ownOccurrence.official.own, 1); assert.equal(ownOccurrence.official.descendant, 1);
+assert.equal(ownOccurrence.official.progress_goals[0].percent, 20); // zero is an estimate, not unknown
+assert.equal(ownOccurrence.official.progress_goals[0].criteria[0].percent, 0);
+assert.equal(model.occurrenceGoals(records, snapshot, progressPayload, ["other"]).official.progress_goals[0].percent, null);
+assert.equal(model.occurrenceGoals(records, snapshot, progressPayload, []).official.progress_goals.length, 3);
+// A new active baseline does not inherit an older AI estimate, and null is not 0%.
+const rebased = JSON.parse(JSON.stringify(progressPayload));
+rebased.goals[0].baselines = [
+  { criterion_ids: ["a", "b"], superseded_by: "new", proposed_assessments: rebased.goals[0].baselines[0].proposed_assessments },
+  { criterion_ids: ["a", "b"], superseded_by: null, proposed_assessments: [{ origin: "ai_proposed", criteria_results: [{ criterion_id: "a", progress_estimate: { percent: null } }, { criterion_id: "b", progress_estimate: { percent: 20 } }] }] }
+];
+assert.equal(model.occurrenceGoals(records, snapshot, rebased, ["biz"]).official.progress_goals[0].percent, null);
 console.log("dashboard-model tests passed");

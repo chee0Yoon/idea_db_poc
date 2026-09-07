@@ -677,7 +677,34 @@ Neo4j 미연결이면 `503 {"code":"not_ready","message":"…","details":{"last_
   "truncated":false
 }
 ```
-`gate_status`: baseline의 `required` 기준이 모두 `met`이면 `met`, 하나라도 `unmet`이면 `unmet`, `disputed`가 있으면 `disputed`, 그 외 `unknown`. **퍼센트 진척률은 어떤 필드로도 제공하지 않는다.** 자식 완료는 부모 통합 목표 충족을 뜻하지 않으므로 상위 goal의 상태는 자식에서 파생하지 않고 그 goal의 assessment만 본다.
+`gate_status`: baseline의 `required` 기준이 모두 `met`이면 `met`, 하나라도 `unmet`이면 `unmet`, `disputed`가 있으면 `disputed`, 그 외 `unknown`. AI 예상 달성률은 `criteria_results[].progress_estimate`로 별도 제공하며 공식 gate와 섞지 않는다. 자식 완료는 부모 통합 목표 충족을 뜻하지 않으므로 상위 goal의 상태는 자식에서 파생하지 않고 그 goal의 assessment만 본다.
+
+**Project·Schema·재귀 Core 목표와 AI 예상 달성률.** 목표와 평가는 각 수준의 정확한 root/slot_path/target에 둔다. 현재 목표가 누락되었으면 로컬 AI가 그 수준 자체의 목표와 필수 기준을 제안한다. 부모 목표의 평가는 연결된 아이디어와 근거를 대조해 별도로 작성하며 자식 개수나 자식 완료율을 자동 평균하지 않는다.
+
+`CriterionResult`는 다음 선택 필드를 지원한다. 없으면 직렬화에서 생략하므로 기존 기록/export digest는 유지된다.
+
+```json
+{"criterion_id":"source_review","status":"unknown","observed_value":null,
+ "note":"성능 지표는 아직 미측정",
+ "progress_estimate":{"percent":20,"rationale":"요구가 현재 원자 계획에 반영되었으나 구현·검증 근거는 없다.",
+ "evidence_record_ids":["capture_current_plan","revision_current_idea"]}}
+```
+
+- `progress_estimate`는 `origin=ai_proposed` 평가에서만 허용한다. `percent`는 유한한 0..100,
+  `rationale`은 공백이 아닌 1..2000자, 근거 ID는 중복 없이 1..64개다.
+- 근거는 같은 Project의 Capture/Revision/Observation이며 기록 seq와 recorded_at이 평가 cutoff 이하이어야 한다.
+  Observation의 occurred_at도 cutoff 이하이다. 다른 Project에서 재사용한 Revision의 근거는
+  평가 Project에 속한 적용 가능성 Capture/Observation으로 설명한다. Artifact는 Observation을 통해 참조한다.
+- 기존 `observed_value`, `status`, `gate_status`는 예상 퍼센트에서 생성하지 않는다. 수치 기준이 미측정이어도
+  기획·구현 단계에 대한 AI 추정은 존재할 수 있다. 공식 목표에도 별도 `proposed_assessments`를 붙일 수 있다.
+- `rubric_version=goal-progress-milestones-v1`이면 기준별 점수는 0/20/40/60/80/100만 허용한다.
+  각각 목표에 맞는 계획 미확인/원자 계획/적용 가능한 상세 설계/적용 가능한 구현/현재 범위의 부분 검증/기준 검증 완료이다.
+  다른 명시적 rubric은 0..100을 사용하며 산정 방법을 평가 note에 설명한다.
+- 대시보드는 활성 기준선에 채택된 필수 기준 전부에 추정이 있을 때만 같은 비중의 평균을 그 목표의
+  AI 예상 달성률로 표시한다. 일부 누락이면 산정 불가와 평가 범위를 표시하고 0으로 대체하지 않는다.
+  Project/Schema/Core 자체 목표와 하위 목표는 별도 표시한다. 성공 확률이나 투입 시간 비율이 아니다.
+- 목표 조회의 평가에는 `evidence_cutoff_at`, `note`, `evidence_observation_ids`도 포함한다.
+  최신 평가/기준선에 추정이 없으면 과거 추정을 자동 계승하지 않는다.
 
 **범위 불일치 처리 (r2).** assessment의 `root_revision_id`/`slot_path`/`target_revision_id`가 현재 스냅샷에서 그대로 해석되지 않으면 그 평가를 **조용히 현재 상태로 쓰지 않는다.** `official_assessment`에서 제외하고 `stale_assessments`에 `reason`(`root_not_in_snapshot` | `path_not_resolvable` | `target_changed`)과 함께 남긴다. 그 baseline의 `gate_status`는 `unknown`이 되며 재검토가 필요하다는 뜻이다. 이력은 지우지 않는다. `superseded_by`는 이 baseline을 `supersedes`로 가리키는 최신 baseline id다(다른 goal에 속할 수 있다).
 

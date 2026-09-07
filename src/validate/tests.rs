@@ -846,6 +846,79 @@ fn evidence_and_completion_must_agree_with_scope_and_required_criteria() {
     expect_code(&unsupported, &c, "assessment_missing_evidence");
 }
 
+fn progress_package(percent: f64) -> Package {
+    let mut package = judged_package();
+    let assessment = &mut package.records[3].data;
+    assessment["origin"] = json!("ai_proposed");
+    assessment["rubric_version"] = json!("goal-progress-milestones-v1");
+    assessment["evidence_cutoff_seq"] = json!(1000);
+    assessment["evidence_cutoff_at"] = json!("2030-01-01T00:00:00Z");
+    assessment["criteria_results"][0]["progress_estimate"] = json!({
+        "percent": percent,
+        "rationale": "the current scoped plan is explicit",
+        "evidence_record_ids": ["obs_checked"]
+    });
+    package
+}
+
+#[test]
+fn ai_progress_estimates_accept_zero_and_twenty_milestones() {
+    let context = login_ctx();
+    run(&progress_package(0.0), &context).expect("zero is an explicit milestone");
+    run(&progress_package(20.0), &context).expect("twenty is an explicit milestone");
+}
+
+#[test]
+fn progress_estimates_enforce_origin_rationale_evidence_and_milestones() {
+    let context = login_ctx();
+
+    let mut official = progress_package(20.0);
+    official.records[3].data["origin"] = json!("official");
+    expect_code(&official, &context, "official_progress_estimate");
+
+    let mut empty_rationale = progress_package(20.0);
+    empty_rationale.records[3].data["criteria_results"][0]["progress_estimate"]["rationale"] =
+        json!("   ");
+    expect_code(&empty_rationale, &context, "invalid_progress_estimate");
+
+    let mut empty_evidence = progress_package(20.0);
+    empty_evidence.records[3].data["criteria_results"][0]["progress_estimate"]
+        ["evidence_record_ids"] = json!([]);
+    expect_code(
+        &empty_evidence,
+        &context,
+        "progress_estimate_missing_evidence",
+    );
+
+    let invalid_milestone = progress_package(10.0);
+    expect_code(&invalid_milestone, &context, "invalid_progress_milestone");
+}
+
+#[test]
+fn progress_evidence_must_be_unique_in_project_and_before_both_cutoffs() {
+    let mut context = login_ctx();
+    context
+        .records
+        .insert("proj_other".into(), project("proj_other", 50));
+
+    let mut foreign = progress_package(20.0);
+    foreign.records[2].data["project_id"] = json!("proj_other");
+    expect_code(&foreign, &context, "progress_evidence_project_mismatch");
+
+    let mut duplicate = progress_package(20.0);
+    duplicate.records[3].data["criteria_results"][0]["progress_estimate"]["evidence_record_ids"] =
+        json!(["obs_checked", "obs_checked"]);
+    expect_code(&duplicate, &context, "duplicate_evidence_record");
+
+    let mut future_seq = progress_package(20.0);
+    future_seq.records[3].data["evidence_cutoff_seq"] = json!(0);
+    expect_code(&future_seq, &context, "evidence_after_cutoff");
+
+    let mut future_time = progress_package(20.0);
+    future_time.records[3].data["evidence_cutoff_at"] = json!("2020-01-01T00:00:00Z");
+    expect_code(&future_time, &context, "evidence_after_cutoff");
+}
+
 #[test]
 fn official_numeric_met_must_match_comparator_and_observed_evidence() {
     let c = login_ctx();
