@@ -46,6 +46,7 @@
       const entity = recordMap().get(data.entity_id);
       return text(entity?.data?.title || data.title || data.body, fallback || '버전');
     }
+    if (record.kind === 'capture') return captureTimelineTitle(record) || '구조화된 원문';
     return text(data.title || data.statement || data.metric || data.label || data.uri || data.source_kind, fallback || kindLabel(record.kind));
   }
 
@@ -391,7 +392,7 @@
     const endLabel = document.createElement('label'); endLabel.textContent = '비교 끝 버전';
     const after = document.createElement('select'); after.id = 'version-compare-to';
     const target = history.revisions.find(r => r.id === afterId) || selected;
-    const prior = history.revisions.filter(r => Number(r.seq) < Number(target.seq));
+    const prior = history.revisions.filter(r => r.id !== target.id);
     const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = prior.length ? '계보에서 비교할 버전 선택' : '최초 버전'; before.append(placeholder);
     for (const record of prior) { const option = document.createElement('option'); option.value = record.id; option.textContent = versionLabel(record); before.append(option); }
     for (const record of history.revisions) { const option = document.createElement('option'); option.value = record.id; option.textContent = versionLabel(record); after.append(option); }
@@ -414,7 +415,7 @@
       const heading = document.createElement('strong'); heading.textContent = versionLabel(revision); item.append(heading);
       const delta = window.IdeaDashboardModel.revisionDiff(state.exportRecords, revision.id);
       const reason = document.createElement('p'); reason.textContent = delta.reason ? `방향 변경 이유: ${delta.reason}` : '별도로 기록된 변경 이유 없음'; item.append(reason);
-      const activity = window.IdeaVersionHistory.revisionActivity(state.exportRecords, revision.id, cutoff);
+      const activity = window.IdeaVersionHistory.revisionActivity(state.exportRecords, revision.id, cutoff, iso($('effective-at').value));
       if (!activity.length) { const empty = document.createElement('p'); empty.textContent = '연결된 원문·관측·평가 기록 없음'; item.append(empty); }
       for (const record of activity) {
         const button = document.createElement('button'); button.type = 'button'; button.className = 'inline-button version-activity';
@@ -773,11 +774,12 @@
     }
   }
 
-  async function loadProject() {
+  async function loadProject(options = {}) {
     const nextProjectId = $('project-select').value;
     const changingProject = state.projectId !== nextProjectId;
     const generation = ++state.contextGeneration;
     state.recordGeneration += 1;
+    const initialRecordGeneration = state.recordGeneration;
     if (changingProject) {
       state.rootRevisionId = null;
       state.knownSeq = null;
@@ -824,7 +826,7 @@
       renderSchemaGoals(state.goalPayload);
       loadTimeline(generation);
       if (state.view === '3d') await loadGraph(generation);
-      if (state.snapshot.root_revision_id) {
+      if (state.snapshot.root_revision_id && options.autoSelect !== false && state.recordGeneration === initialRecordGeneration) {
         await selectRecord(state.snapshot.root_revision_id, { root_revision_id: state.snapshot.root_revision_id, revision_id: state.snapshot.root_revision_id, slot_path: [], roles: [] }, false);
       }
       return generation === state.contextGeneration ? generation : null;
@@ -1267,7 +1269,7 @@
     notify('선택한 이력 범위를 열었습니다.', 'success');
     const generation = await loadProject();
     if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
-    await selectRecord(rootRevisionId, { root_revision_id: rootRevisionId, revision_id: rootRevisionId, slot_path: [], roles: [] });
+    if (state.selected?.record?.id === rootRevisionId) revealSelectedDetail();
   }
 
   async function openTimelineRecord(record, rootRevisionId) {
@@ -1276,9 +1278,10 @@
     state.rootRevisionId = rootRevisionId || null;
     state.knownSeq = Number.isFinite(Number(record.seq)) ? Number(record.seq) : null;
     $('known-at').value = '';
-    const generation = await loadProject();
+    const expectedRecordGeneration = state.recordGeneration + 1;
+    const generation = await loadProject({ autoSelect: false });
     if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
-    await openLinkedRecord(record.id);
+    if (state.recordGeneration === expectedRecordGeneration) await openLinkedRecord(record.id);
   }
 
   async function exportProject() {

@@ -65,10 +65,17 @@ const fs=require('node:fs'),path=require('node:path'),assert=require('node:asser
   assert.ok(await page.locator('#version-compare-to option').count()>=3,'Idea lineage lost earlier versions');
   await page.locator('#version-compare-from').selectOption(await page.locator('#version-compare-from option').nth(1).getAttribute('value'));
   assert.ok(await page.locator('.diff-copy').isVisible());checks.push('atomic Idea also supports older lineage selection and comparison');
+  let releaseGoals, observedGoals;
+  const goalsBarrier=new Promise(resolve=>{releaseGoals=resolve;}), goalsRequested=new Promise(resolve=>{observedGoals=resolve;});
+  await page.route('**/api/goals?**',async route=>{observedGoals();await goalsBarrier;await route.continue();});
   await page.locator('#timeline .timeline-button').filter({hasText:'escaped_card_count'}).first().click();
+  await goalsRequested;
   await page.waitForFunction(()=>document.querySelector('#tree-summary').textContent.includes('선택한 이력'));
   const observation=exported.content.records.find(r=>r.kind==='observation'&&r.data.metric==='escaped_card_count');
   await select({scope:{target_revision_id:observation.data.target_revision_id}});
+  releaseGoals();await page.waitForLoadState('networkidle');await page.unroute('**/api/goals?**');
+  assert.ok((await page.locator('#record-meta').textContent()).includes(observation.data.target_revision_id),'late auto-root selection overwrote user Idea click');
+  checks.push('Idea selected while historical goals are loading survives delayed automatic root selection');
   await page.waitForFunction(()=>document.querySelector('#goal-state').textContent.includes('실제 측정 3'));
   assert.match(await page.locator('#goal-state .official-completion-rate').innerText(),/100%/);
   assert.ok(!(await page.locator('#goal-state').innerText()).includes('AI 예상 달성률 약 20%'));
