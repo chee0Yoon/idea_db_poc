@@ -682,6 +682,10 @@ async fn prepare_replacement(
         let ancestor = &chain[depth];
         let new_id = util::derived_id("rev", &format!("{}:{}", req.idempotency_key, ancestor.id));
         let mut data = ancestor.data_value();
+        // A child replacement invalidates an AI summary of the old composition.
+        data.as_object_mut()
+            .expect("revision data")
+            .remove("summary");
         let slot_id = &req.slot_path[depth];
         if let Some(slots) = data.get_mut("slots").and_then(Value::as_array_mut) {
             for slot in slots.iter_mut() {

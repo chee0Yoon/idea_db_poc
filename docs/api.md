@@ -2,6 +2,15 @@
 
 # idea_db API 계약 v1
 
+### 추가 계약: 원자 요약과 검색 문맥 (2026-09-07)
+
+- 모든 Revision은 선택적인 `summary: {text, source}`를 갖는다. `text`는 1..2000자, `source`는 기존 Source 형식이며 `origin: ai`, `claim_mode: inferred`, 모델 또는 스킬, 본문과 동일한 필수 capture_id를 요구한다. source_anchor는 허용하지 않는다. 생략한 과거 Revision의 JSON/digest는 바뀌지 않는다.
+- 요약은 해당 본문/원문의 지시어·조건·예외를 풀어 쓴 검색 보조다. 공유 Idea에 사용 위치별 목표나 채택 판단을 주입하지 않는다. 의미 충실성은 클라이언트 검토 대상이며 DB 검증 성공이 이를 보증하지 않는다.
+- 요약이 있는 Idea는 `Summary:\n{summary.text}\n\nBody:\n{body}` 전체를 로컬 임베딩한다. 프로파일은 `/idea-body-summary-v2`; 없는 Idea는 기존 본문과 `/idea-body-v1` 그대로다. 임베딩 ID는 실제 입력 전문·Revision·모델 프로파일에 결합한다. preview는 본문/요약과 검토 필요 여부를 반환한다.
+- MCP 검색의 `embedding_format`은 `auto`(기본), `body_v1`, `body_summary_v2`다. auto는 동일한 고정 모델의 두 입력 형식을 명시적으로 허용하며, Revision별 최고 코사인 점수 한 개를 어휘 순위와 결합한다. 응답은 허용 프로파일 목록과 각 결과가 사용한 프로파일을 공개한다. 과거 벡터를 덮어쓰거나 다른 모델 digest를 혼합하지 않는다.
+- 검색의 `context_budget_chars`는 0..32000, HTTP 기본 0 / MCP 기본 8000이다. 결과 전체 `occurrence_contexts` 패킷의 정규 JSON Unicode 문자 합계를 제한하며 응답 메타데이터·모델 토큰은 별도다. 사용 위치별 상위 Revision 요약/본문과 그 경로의 `goal_history`를 반환한다. 목표는 최신순 이력이며 `goal_selection: scope_history_not_active_baseline`으로 현재 기준선 선택과 구별한다. 기준선 상태는 `idea_goals`에서 조회한다. 각 상위 경로 자체의 역할과 root/path·시간 필터를 적용한다. 최대 128개 패킷·패킷당 16개 목표, 예산에 따른 본문/요약 축약과 생략을 표시한다. 요약은 원문을 대체하지 않으며 검색 점수/목표 적합성 판정에 이 문맥을 자동 합산하지 않는다.
+- preview의 본문/요약 검토 표면은 `review_records`다. `embedding_inputs`에는 실제 입력 digest/프로파일/요약 포함 여부, `embedding_profiles`에는 실제 프로파일 목록이 있다. 기존 단수 `embedding_profile`은 호환을 위해 provider의 body-v1 기준값을 유지한다. occurrence replacement는 복사한 조상의 요약을 제거하며, 과거 요약을 소급 수정하거나 요약 추가만을 위한 가짜 본문 교정을 만들지 않는다.
+
 상태: **고정(frozen), 개정 r2** · 2026-09-07 · 소유자: Opus(백엔드 구현) · 소비자: Main(통합/수용), UI 워커(`static/**`), 수용 워커(`tests/*.py`)
 
 > **r2 변경 요약** (r1을 읽은 워커는 이 목록만 확인하면 된다)

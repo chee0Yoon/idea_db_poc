@@ -310,6 +310,9 @@
       promotion: data.reason,
     };
     $('record-content').textContent = text(typedContent[record.kind] || data.note || data.description, '표시할 본문이 없습니다.');
+    $('record-summary-section').hidden = !data.summary;
+    $('record-summary').textContent = data.summary?.text || '';
+    $('record-summary-source').textContent = data.summary ? `작성: ${data.summary.source?.model || data.summary.source?.skill || 'AI'} · 검색 보조 요약입니다. 조건·예외와 목표 적합성은 본문·출처에서 확인하세요.` : '';
     const facts = [];
     appendFact(facts, '종류', kindLabel(record.kind));
     appendFact(facts, '역할', occurrence?.roles?.join(', '));

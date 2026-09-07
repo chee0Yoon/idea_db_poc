@@ -223,6 +223,20 @@ def audit_export(document: Json) -> Json:
             for field in ("correction_of", "previous_revision_id"):
                 if d.get(field) is not None: _ref(records, d[field], {"revision"}, rid + "." + field, errors)
             source = d.get("source", {})
+            summary = d.get("summary")
+            if summary is not None:
+                ss = summary.get("source", {}) if isinstance(summary, dict) else {}
+                text = summary.get("text") if isinstance(summary, dict) else None
+                if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+                    errors.append(f"{rid}: invalid summary text")
+                if (not isinstance(ss, dict) or ss.get("origin") != "ai"
+                    or ss.get("claim_mode") != "inferred" or ss.get("source_anchor") is not None
+                    or not any(isinstance(ss.get(k), str) and ss[k].strip() for k in ("model", "skill"))
+                    or not isinstance(source, dict)
+                    or not ss.get("capture_id") or ss.get("capture_id") != source.get("capture_id")):
+                    errors.append(f"{rid}: invalid summary source")
+                if isinstance(ss, dict):
+                    _ref(records, ss.get("capture_id"), {"capture"}, rid + ".summary.source.capture_id", errors)
             if isinstance(source, dict):
                 capture = source.get("capture_id")
                 if capture is not None: _ref(records, capture, {"capture"}, rid + ".source.capture_id", errors)

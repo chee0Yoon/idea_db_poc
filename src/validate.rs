@@ -782,6 +782,42 @@ fn validate_revision(
         limits::MAX_BODY_CHARS,
     );
     check_slugs(issues, &format!("{d}.tags"), &r.tags, limits::MAX_TAGS);
+    if let Some(summary) = &r.summary {
+        let path = format!("{d}.summary");
+        check_text(issues, &format!("{path}.text"), &summary.text, 1, 2000);
+        if summary.text.trim().is_empty() {
+            issues.push(Issue::new(
+                &path,
+                "invalid_field",
+                "Summary text cannot be blank.",
+            ));
+        }
+        let source = &summary.source;
+        check_origin_attribution(
+            issues,
+            &path,
+            source.origin,
+            source.model.as_ref(),
+            source.skill.as_ref(),
+        );
+        if source.origin != Origin::Ai
+            || source.claim_mode != ClaimMode::Inferred
+            || source.source_anchor.is_some()
+            || source.capture_id.is_none()
+            || source.capture_id != r.source.capture_id
+        {
+            issues.push(Issue::new(&path, "invalid_summary_source", "Summary must be AI/inferred, without an anchor, and name the same source capture as the body."));
+        }
+        if let Some(capture) = &source.capture_id {
+            need(
+                lk,
+                issues,
+                &format!("{path}.source.capture_id"),
+                capture,
+                &[RecordKind::Capture],
+            );
+        }
+    }
 
     let Some(owner) = need(
         lk,

@@ -319,3 +319,11 @@ Idea 선택을 자동 루트 선택이 덮었다. 초기 로딩의 record genera
 그 구간의 Neo4j `/logs` 볼륨과 MCP/검증 로그는 남아 있지만 해당 컨테이너 stdout
 전체가 별도 파일로 보존되었다고 주장하지 않는다. 이후 교체 전후 stdout와 전체
 Neo4j 로그는 `test-results/progress-install-20260907/`에 별도로 복사했다.
+# 2026-09-07 원자 요약·검색 문맥 개정
+
+- `make check`: Rust 133개 통과(라이브 DB 취소 테스트 1개는 기본 실행에서 제외). `tests/evidence_test.py` + `tests/integrity_audit_test.py`: Python 18개 통과. 대시보드 모델/버전/그래프 JS 검사 통과.
+- `IDEA_DB_SKIP_BUILD=1 IDEA_DB_TEST_IMAGE=idea-db:summary-v2 IDEA_DB_SUITE=evidence IDEA_DB_REPORT_DIR=.../summary-evidence-r2 bash scripts/docker-check.sh`: 최종 독립 이미지에서 MCP 수용 13개, 기존 intake 12개, lifecycle 30단계, 문맥 질문 39개, 실제 기록 모델 출력 24사례, 의미 반례 10개, 새 요약 출처 오류 10종과 공유 경로/시점/검색 비교 통과.
+- 전체 Neo4j 1,124개 기록·362개 Revision·494개 CONTAINS 관계 무결성 확인. abrupt kill/restart와 빈 DB restore 이후 export 내용/digest 동일, 과거 30단계/3개 비교 root 재조회, 필수 프로세스 사망과 정상 종료 검증 통과.
+- 브라우저 `tests/summary-ui.cjs`: 실제 복원 DB에서 AI 요약/본문 분리, 요약 없는 기존 기록 전환, 2D/3D 캔버스, 쓰기 요청/브라우저 오류 없음 확인. 스크린샷은 `test-results/summary-ui-r1/`에 보존.
+- [설계와 측정 한계](atomization-and-summary.md), [최종 이미지·수치](evidence/20260907-summary-embeddings.json). 사람이 작성한 합성 요약 6쌍/6질의이며 생성 모델 품질이나 일반 성능 검증이 아니다. 잘못된 의미의 요약을 자동 거절하는 의미 검증기는 구현하지 않았다.
+- 모든 성공/실패 로그와 두 차례 전체 실행 결과를 별도 이름으로 보존했다. 초기 단위 테스트의 source_kind fixture 오타는 수정 후 통과했고, 기존 사용자 기록을 테스트 기대값에 맞춰 고치지 않았다.

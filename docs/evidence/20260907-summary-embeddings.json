@@ -1,0 +1,281 @@
+{
+  "suite": "summary-aware-atomization-v2",
+  "date": "2026-09-07",
+  "deployment": {
+    "completed_at": "2026-09-07T14:31:58.049413+00:00",
+    "image_id": "sha256:03f05d1854e78cfe7193062f6f11b1576a1191e24126c5ea0bfc2cf75ec96729",
+    "suite": "evidence",
+    "abrupt_restart_export_identity": true,
+    "abrupt_restart_history_reverified": true,
+    "fresh_volume_restore_export_identity": true,
+    "fresh_volume_restore_history_reverified": true,
+    "required_child_exit_fails_container": true,
+    "graceful_shutdown_exit_zero": true
+  },
+  "neo4j_counts": {
+    "heads": 10,
+    "receipts": 88,
+    "records": 1124,
+    "revisions": 362
+  },
+  "integrity_errors": [],
+  "contains_relationships": 494,
+  "queries": 6,
+  "candidates_per_arm": 6,
+  "hybrid_metrics": {
+    "body_summary_v2": {
+      "mean_recall_at_3": 1.0,
+      "mrr": 1.0
+    },
+    "body_v1": {
+      "mean_recall_at_3": 0.9166666666666666,
+      "mrr": 0.9166666666666666
+    }
+  },
+  "invalid_summary_cases": {
+    "blank_text": "validation_failed",
+    "capture_mismatch": "validation_failed",
+    "empty_text": "validation_failed",
+    "extracted_claim": "validation_failed",
+    "has_anchor": "validation_failed",
+    "human_origin": "validation_failed",
+    "missing_provenance": "validation_failed",
+    "no_attribution": "validation_failed",
+    "too_long": "validation_failed",
+    "unknown_field": "validation_failed"
+  },
+  "embedding_binding": {
+    "checked": "sha256 of the exact UTF-8 body or Summary:\\n{text}\\n\\nBody:\\n{body} render",
+    "paired_inputs": 12,
+    "provider_reembed": "not independently requested; staged input digests and stored provider vectors are the live binding evidence"
+  },
+  "limitations": "Six synthetic labelled queries, hand-authored AI-shaped summaries, one deliberately incomplete legacy pronoun case; multilingual synonyms favor this fixture. Measures retrieval, not generated answers or autonomous atomization.",
+  "vector_only_metrics": {
+    "body_v1": {
+      "mrr": 0.9166666666666666,
+      "mean_recall_at_3": 0.9166666666666666
+    },
+    "body_summary_v2": {
+      "mrr": 1.0,
+      "mean_recall_at_3": 1.0
+    }
+  },
+  "per_query": [
+    {
+      "category": "deployment",
+      "query": "When are deployment failure notifications suppressed?",
+      "body_v1": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_deploy_alert_plain_revision": 1,
+          "sic217ba18d6ac4f5abb_legacy_pronoun_plain_revision": 4
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_legacy_pronoun_plain_revision",
+          "sic217ba18d6ac4f5abb_deploy_alert_plain_revision"
+        ],
+        "recall_at_1": 0.5,
+        "recall_at_3": 0.5,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_deploy_alert_plain_revision": 1,
+          "sic217ba18d6ac4f5abb_legacy_pronoun_plain_revision": 4
+        }
+      },
+      "body_summary_v2": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_deploy_alert_summary_revision": 1,
+          "sic217ba18d6ac4f5abb_legacy_pronoun_summary_revision": 2
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_legacy_pronoun_summary_revision",
+          "sic217ba18d6ac4f5abb_deploy_alert_summary_revision"
+        ],
+        "recall_at_1": 0.5,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_deploy_alert_summary_revision": 1,
+          "sic217ba18d6ac4f5abb_legacy_pronoun_summary_revision": 2
+        }
+      }
+    },
+    {
+      "category": "rollback",
+      "query": "customer notification delivery after rollback verification",
+      "body_v1": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_rollback_plain_revision": 1
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_rollback_plain_revision"
+        ],
+        "recall_at_1": 1.0,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_rollback_plain_revision": 1
+        }
+      },
+      "body_summary_v2": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_rollback_summary_revision": 1
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_rollback_summary_revision"
+        ],
+        "recall_at_1": 1.0,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_rollback_summary_revision": 1
+        }
+      }
+    },
+    {
+      "category": "maintenance",
+      "query": "maintenance silence until completion confirmation",
+      "body_v1": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_maintenance_plain_revision": 2
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_maintenance_plain_revision"
+        ],
+        "recall_at_1": 0.0,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 0.5,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_maintenance_plain_revision": 2
+        }
+      },
+      "body_summary_v2": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_maintenance_summary_revision": 1
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_maintenance_summary_revision"
+        ],
+        "recall_at_1": 1.0,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_maintenance_summary_revision": 1
+        }
+      }
+    },
+    {
+      "category": "incident",
+      "query": "severity one incident automatic restart approval",
+      "body_v1": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_incident_plain_revision": 1
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_incident_plain_revision"
+        ],
+        "recall_at_1": 1.0,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_incident_plain_revision": 1
+        }
+      },
+      "body_summary_v2": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_incident_summary_revision": 1
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_incident_summary_revision"
+        ],
+        "recall_at_1": 1.0,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_incident_summary_revision": 1
+        }
+      }
+    },
+    {
+      "category": "privacy",
+      "query": "retention exception before permanent privacy deletion",
+      "body_v1": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_privacy_plain_revision": 1
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_privacy_plain_revision"
+        ],
+        "recall_at_1": 1.0,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_privacy_plain_revision": 1
+        }
+      },
+      "body_summary_v2": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_privacy_summary_revision": 1
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_privacy_summary_revision"
+        ],
+        "recall_at_1": 1.0,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_privacy_summary_revision": 1
+        }
+      }
+    },
+    {
+      "category": "negative",
+      "query": "야간 배포 알림을 승인 전에 재개할 수 있는가",
+      "body_v1": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_deploy_alert_plain_revision": 1,
+          "sic217ba18d6ac4f5abb_legacy_pronoun_plain_revision": 3
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_legacy_pronoun_plain_revision",
+          "sic217ba18d6ac4f5abb_deploy_alert_plain_revision"
+        ],
+        "recall_at_1": 0.5,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_deploy_alert_plain_revision": 1,
+          "sic217ba18d6ac4f5abb_legacy_pronoun_plain_revision": 3
+        }
+      },
+      "body_summary_v2": {
+        "candidate_count": 6,
+        "gold_ranks": {
+          "sic217ba18d6ac4f5abb_deploy_alert_summary_revision": 1,
+          "sic217ba18d6ac4f5abb_legacy_pronoun_summary_revision": 2
+        },
+        "gold_revision_ids": [
+          "sic217ba18d6ac4f5abb_legacy_pronoun_summary_revision",
+          "sic217ba18d6ac4f5abb_deploy_alert_summary_revision"
+        ],
+        "recall_at_1": 0.5,
+        "recall_at_3": 1.0,
+        "reciprocal_rank": 1.0,
+        "vector_only_gold_ranks": {
+          "sic217ba18d6ac4f5abb_deploy_alert_summary_revision": 2,
+          "sic217ba18d6ac4f5abb_legacy_pronoun_summary_revision": 1
+        }
+      }
+    }
+  ]
+}

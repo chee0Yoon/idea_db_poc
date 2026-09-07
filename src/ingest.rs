@@ -16,6 +16,24 @@ use crate::{
 };
 
 const FORMAT: &str = "idea-body-v1";
+const SUMMARY_FORMAT: &str = "idea-body-summary-v2";
+
+fn embedding_text(revision: &crate::model::RevisionData) -> String {
+    match &revision.summary {
+        Some(summary) => format!("Summary:\n{}\n\nBody:\n{}", summary.text, revision.body),
+        None => revision.body.clone(),
+    }
+}
+
+fn summary_profile(profile: &str) -> String {
+    format!(
+        "{}/{SUMMARY_FORMAT}",
+        profile
+            .strip_suffix(FORMAT)
+            .unwrap_or(profile)
+            .trim_end_matches('/')
+    )
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -220,7 +238,7 @@ fn parse_package(body: Value) -> ApiResult<Package> {
     serde_json::from_value(body).map_err(|e| ApiError::bad_request(e.to_string()))
 }
 
-fn ideas<'a>(pkg: &'a Package, ctx: &Context) -> Vec<(&'a str, &'a str, String)> {
+fn ideas<'a>(pkg: &'a Package, ctx: &Context) -> Vec<(&'a str, String, String, bool)> {
     pkg.records
         .iter()
         .filter_map(|r| {
@@ -246,7 +264,12 @@ fn ideas<'a>(pkg: &'a Package, ctx: &Context) -> Vec<(&'a str, &'a str, String)>
             if entity.entity_kind != EntityKind::Idea {
                 return None;
             }
-            Some((r.id.as_str(), r.data["body"].as_str()?, entity.project_id))
+            Some((
+                r.id.as_str(),
+                embedding_text(&revision),
+                entity.project_id,
+                revision.summary.is_some(),
+            ))
         })
         .collect()
 }
@@ -323,13 +346,19 @@ pub async fn preview(neo: &Neo4j, body: Value) -> ApiResult<Value> {
         return Err(ApiError::validation(vec![Issue::new("records", "limit_exceeded", "Preview would exceed package/namespace capacity after indexing; submit a smaller reviewed package.")]));
     }
     let mut mappings = Vec::new();
+    let mut embedding_inputs = Vec::new();
     let mut profile = Value::Null;
     if !atoms.is_empty() {
         let provider = Provider::configured().await?;
         profile = json!(provider.profile);
         let mut dimension = None;
-        for (revision_id, text, project_id) in atoms {
-            let vector = provider.embed(text).await?;
+        for (revision_id, text, project_id, includes_summary) in atoms {
+            let input_profile = if includes_summary {
+                summary_profile(&provider.profile)
+            } else {
+                provider.profile.clone()
+            };
+            let vector = provider.embed(&text).await?;
             if dimension.is_some_and(|d| d != vector.len()) {
                 return Err(embedding_error(
                     "embedding_dimension_changed",
@@ -348,18 +377,20 @@ pub async fn preview(neo: &Neo4j, body: Value) -> ApiResult<Value> {
                 )]));
             }
             dimension = Some(vector.len());
-            let id = embedding_id(revision_id, text, &provider.profile);
+            let id = embedding_id(revision_id, &text, &input_profile);
+            embedding_inputs.push(json!({"revision_id":revision_id,"profile":input_profile,"input_digest":util::digest_text(&text),"includes_summary":includes_summary}));
             let records = package["records"]
                 .as_array_mut()
                 .ok_or_else(|| ApiError::bad_request("records must be an array"))?;
             // A new preview recomputes embeddings for new Ideas, never trusts stale vectors.
             records
                 .retain(|x| !(x["kind"] == "embedding" && x["data"]["revision_id"] == revision_id));
-            records.push(json!({"id":id,"kind":"embedding","data":{"revision_id":revision_id,"model":provider.profile,"dim":vector.len(),"values":vector,"normalized":false}}));
+            records.push(json!({"id":id,"kind":"embedding","data":{"revision_id":revision_id,"model":input_profile,"dim":vector.len(),"values":vector,"normalized":false}}));
             if ctx.records.contains_key(&project_id) {
-                let hits = query::search(
+                let hits = query::search_with_profiles(
                     &ctx,
                     json!({"project_id":project_id,"scope":"project_history","query":text,"vector":{"model":provider.profile,"dim":vector.len(),"values":vector},"limit":10}),
+                    &[summary_profile(&provider.profile)],
                 )?;
                 mappings.push(json!({"revision_id":revision_id,"suggestions":hits["results"],"related":hits["related"],"vector_status":hits["vector_status"],"requires_semantic_review":true}));
             } else {
@@ -372,7 +403,11 @@ pub async fn preview(neo: &Neo4j, body: Value) -> ApiResult<Value> {
     // provider ran. Revalidate the exact packet immediately before staging it.
     let validation = require_valid(mutation::validate_only(neo, package.clone()).await?)?;
     let prepared_digest = util::digest_json(&package);
-    let summary = json!({"upload_id":upload_id,"prepared_digest":prepared_digest,"validation":validation,"embedding_profile":profile,"mappings":mappings,"semantic_atomicity":"client_review_required","automatically_merged":false,"replacement_result":replacement_result,"records":package["records"].as_array().map(Vec::len),"review_records":package["records"].as_array().map(|records|records.iter().filter(|r|r["kind"]!="embedding").cloned().collect::<Vec<_>>())});
+    let profiles = embedding_inputs
+        .iter()
+        .filter_map(|input| input["profile"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let summary = json!({"upload_id":upload_id,"prepared_digest":prepared_digest,"validation":validation,"embedding_profile":profile,"embedding_profiles":profiles,"embedding_inputs":embedding_inputs,"summary_review_required":pkg.records.iter().any(|r|r.data.get("summary").is_some_and(|s|!s.is_null())),"mappings":mappings,"semantic_atomicity":"client_review_required","automatically_merged":false,"replacement_result":replacement_result,"records":package["records"].as_array().map(Vec::len),"review_records":package["records"].as_array().map(|records|records.iter().filter(|r|r["kind"]!="embedding").cloned().collect::<Vec<_>>())});
     let stored = crate::staging::put(neo,&upload_id,json!({"raw_request_digest":raw_request_digest,"prepared_digest":prepared_digest,"package":package,"summary":summary,"created_at":util::now_utc_millis()})).await?;
     Ok(stored["summary"].clone())
 }
@@ -423,7 +458,7 @@ pub async fn apply(neo: &Neo4j, body: Value) -> ApiResult<Value> {
     }
     let pkg = parse_package(package.clone())?;
     let ctx = store::read_context(neo).await?;
-    for (id, text, _) in ideas(&pkg, &ctx) {
+    for (id, text, _, includes_summary) in ideas(&pkg, &ctx) {
         let embeddings: Vec<_> = pkg
             .records
             .iter()
@@ -440,9 +475,14 @@ pub async fn apply(neo: &Neo4j, body: Value) -> ApiResult<Value> {
         }
         let e: crate::model::EmbeddingData = serde_json::from_value(embeddings[0].data.clone())
             .map_err(|e| ApiError::bad_request(e.to_string()))?;
-        if !e.model.ends_with(&format!("/{FORMAT}"))
+        let format = if includes_summary {
+            SUMMARY_FORMAT
+        } else {
+            FORMAT
+        };
+        if !e.model.ends_with(&format!("/{format}"))
             || !e.model.contains("@sha256:")
-            || embeddings[0].id != embedding_id(id, text, &e.model)
+            || embeddings[0].id != embedding_id(id, &text, &e.model)
             || e.dim != e.values.len()
         {
             return Err(ApiError::bad_request("Embedding identity does not bind this revision, body and model profile; preview again."));
@@ -471,6 +511,16 @@ pub async fn replace(neo: &Neo4j, body: Value) -> ApiResult<Value> {
 
 /// Explicit lexical mode remains useful without a model; hybrid never silently degrades.
 pub async fn search(neo: &Neo4j, mut body: Value) -> ApiResult<Value> {
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| ApiError::bad_request("search must be an object"))?;
+    let format = object.remove("embedding_format").unwrap_or(json!("auto"));
+    if ![json!("auto"), json!("body_v1"), json!("body_summary_v2")].contains(&format) {
+        return Err(ApiError::bad_request(
+            "embedding_format must be auto, body_v1 or body_summary_v2",
+        ));
+    }
+    object.entry("context_budget_chars").or_insert(json!(8000));
     let mode = body
         .as_object_mut()
         .ok_or_else(|| ApiError::bad_request("search must be an object"))?
@@ -487,6 +537,7 @@ pub async fn search(neo: &Neo4j, mut body: Value) -> ApiResult<Value> {
         ));
     }
     let mut profile = Value::Null;
+    let mut extra_profiles = Vec::new();
     if mode == "hybrid" {
         let text = body["query"]
             .as_str()
@@ -495,14 +546,24 @@ pub async fn search(neo: &Neo4j, mut body: Value) -> ApiResult<Value> {
         let provider = Provider::configured().await?;
         let vector = provider.embed(text).await?;
         provider.verify_unchanged().await?;
-        profile = json!(provider.profile);
-        body["vector"] = json!({"model":provider.profile,"dim":vector.len(),"values":vector});
+        let primary = if format == "body_summary_v2" {
+            summary_profile(&provider.profile)
+        } else {
+            provider.profile.clone()
+        };
+        if format == "auto" {
+            extra_profiles.push(summary_profile(&provider.profile));
+        }
+        profile = json!(primary);
+        body["vector"] = json!({"model":primary,"dim":vector.len(),"values":vector});
     }
     let ctx = store::read_context(neo).await?;
-    let mut found = query::search(&ctx, body)?;
+    let mut found = query::search_with_profiles(&ctx, body, &extra_profiles)?;
     found["index_coverage"] = index_coverage(&mode, &found["vector_status"]);
     found["embedding_mode"] = mode;
     found["embedding_profile"] = profile;
+    found["embedding_format"] = format;
+    found["embedding_profiles"] = found["vector_status"]["models"].clone();
     Ok(found)
 }
 
@@ -514,7 +575,7 @@ fn index_coverage(mode: &Value, vector_status: &Value) -> Value {
         .as_u64()
         .unwrap_or(0);
     if mode == "hybrid" {
-        json!({"checked":true,"eligible_idea_revisions":eligible,"indexed_idea_revisions":indexed,"unindexed_idea_revisions":eligible.saturating_sub(indexed),"complete":indexed==eligible,"note":"Coverage counts only eligible Idea revisions for the requested immutable model profile."})
+        json!({"checked":true,"eligible_idea_revisions":eligible,"indexed_idea_revisions":indexed,"unindexed_idea_revisions":eligible.saturating_sub(indexed),"complete":indexed==eligible,"note":"Coverage counts eligible Idea revisions for the explicitly requested immutable model/input profiles; it does not measure summary quality."})
     } else {
         json!({"checked":false,"eligible_idea_revisions":eligible,"indexed_idea_revisions":Value::Null,"unindexed_idea_revisions":Value::Null,"complete":Value::Null,"note":"Lexical search did not request an embedding profile, so index completeness was not evaluated."})
     }
@@ -523,6 +584,45 @@ fn index_coverage(mode: &Value, vector_status: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn summary_input_keeps_body_and_binds_both_without_changing_legacy_json() {
+        let old = json!({"entity_id":"ent_atom","body":"이 경우 5회 실패하면 30분 잠근다. 관리자는 제외한다.","change_kind":"initial","source":{"origin":"human","claim_mode":"inferred"}});
+        let legacy: crate::model::RevisionData = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(embedding_text(&legacy), legacy.body);
+        assert!(serde_json::to_value(&legacy)
+            .unwrap()
+            .get("summary")
+            .is_none());
+        let mut proposed = old;
+        proposed["summary"] = json!({"text":"로그인 제한: 5회 실패 시 30분 잠금, 관리자 제외.","source":{"origin":"ai","claim_mode":"inferred","skill":"test","capture_id":"cap_source"}});
+        let mut revision: crate::model::RevisionData = serde_json::from_value(proposed).unwrap();
+        let input = embedding_text(&revision);
+        assert_eq!(
+            input,
+            format!(
+                "Summary:\n{}\n\nBody:\n{}",
+                revision.summary.as_ref().unwrap().text,
+                revision.body
+            )
+        );
+        let profile = summary_profile("model@sha256:abc/idea-body-v1");
+        assert_eq!(profile, "model@sha256:abc/idea-body-summary-v2");
+        let id = embedding_id("rev_atom", &input, &profile);
+        revision
+            .summary
+            .as_mut()
+            .unwrap()
+            .text
+            .push_str(" 다른 요약");
+        assert_ne!(
+            id,
+            embedding_id("rev_atom", &embedding_text(&revision), &profile)
+        );
+        assert_ne!(
+            id,
+            embedding_id("rev_atom", &input, "model@sha256:abc/idea-body-v1")
+        );
+    }
     #[test]
     fn vector_validation_and_content_binding() {
         assert!(check_vector(&[]).is_err());

@@ -309,10 +309,20 @@ pub struct Source {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RevisionSummary {
+    pub text: String,
+    pub source: Source,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RevisionData {
     /// An `entity` record, or a `project` record for a project-root revision.
     pub entity_id: String,
     pub body: String,
+    /// Intrinsic, client-authored retrieval aid; never an occurrence goal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<RevisionSummary>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -799,6 +809,9 @@ impl StoredRecord {
                 opt(&mut out, &d.correction_of);
                 opt(&mut out, &d.previous_revision_id);
                 opt(&mut out, &d.source.capture_id);
+                if let Some(summary) = &d.summary {
+                    opt(&mut out, &summary.source.capture_id);
+                }
                 if let Some(a) = &d.source.source_anchor {
                     out.push(a.capture_id.clone());
                 }

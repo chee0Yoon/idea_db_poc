@@ -573,6 +573,8 @@ struct Search {
     project_id: String,
     query: String,
     #[serde(default)]
+    context_budget_chars: usize,
+    #[serde(default)]
     stage: Option<Stage>,
     #[serde(default)]
     known_seq: Option<i64>,
@@ -735,7 +737,75 @@ fn cosine(a: &[f64], b: &[f64]) -> Option<f64> {
     }
 }
 pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
+    search_with_profiles(ctx, body, &[])
+}
+
+/// Keep resolvable IDs/path and explicit truncation instead of silently clipping JSON.
+fn compact_context(packet: &mut Value, budget: usize) {
+    while util::canonical_json(packet).chars().count() > budget {
+        let body_len = packet["body"].as_str().map_or(0, |s| s.chars().count());
+        let summary_len = packet["summary"]["text"]
+            .as_str()
+            .map_or(0, |s| s.chars().count());
+        if body_len > 32 || summary_len > 32 {
+            if body_len >= summary_len {
+                packet["body"] = json!(packet["body"]
+                    .as_str()
+                    .unwrap()
+                    .chars()
+                    .take(body_len / 2)
+                    .collect::<String>());
+                packet["body_truncated"] = json!(true);
+            } else {
+                packet["summary"]["text"] = json!(packet["summary"]["text"]
+                    .as_str()
+                    .unwrap()
+                    .chars()
+                    .take(summary_len / 2)
+                    .collect::<String>());
+                packet["summary_truncated"] = json!(true);
+            }
+        } else if packet["goal_history"]
+            .as_array()
+            .is_some_and(|g| !g.is_empty())
+        {
+            packet["goal_history"].as_array_mut().unwrap().pop();
+            packet["goals_truncated"] = json!(true);
+        } else {
+            break;
+        }
+    }
+}
+
+/// Additional profiles are selected by MCP from the same immutable model only.
+pub(crate) fn search_with_profiles(
+    ctx: &Context,
+    body: Value,
+    extra_profiles: &[String],
+) -> ApiResult<Value> {
     let q: Search = serde_json::from_value(body).map_err(|e| bad(e.to_string()))?;
+    if !extra_profiles.is_empty() {
+        let base = q
+            .vector
+            .as_ref()
+            .and_then(|v| v.model.rsplit_once('/'))
+            .map(|(model, _)| model);
+        if base.is_none()
+            || extra_profiles.iter().any(|p| {
+                p.rsplit_once('/').is_none_or(|(model, format)| {
+                    Some(model) != base
+                        || !matches!(format, "idea-body-v1" | "idea-body-summary-v2")
+                })
+            })
+        {
+            return Err(bad(
+                "Additional embedding formats must belong to the same immutable model identity.",
+            ));
+        }
+    }
+    if q.context_budget_chars > 32000 {
+        return Err(bad("context_budget_chars must be 0..=32000"));
+    }
     let mut p = Params::new();
     p.insert("project_id".into(), q.project_id.clone());
     if let Some(x) = q.stage {
@@ -925,10 +995,32 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
         }
     }
     let vector = q.vector.as_ref();
+    let profiles = vector
+        .map(|vector| {
+            std::iter::once(vector.model.clone())
+                .chain(extra_profiles.iter().cloned())
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let matching_embedding = |id: &str| {
+        vector.and_then(|x| {
+            profiles
+                .iter()
+                .filter_map(|model| {
+                    embeddings
+                        .get(&(id.to_string(), model.clone(), x.dim))
+                        .and_then(|record| record.as_embedding())
+                        .and_then(|embedding| cosine(&x.values, &embedding.values))
+                        .map(|score| (score, model.clone()))
+                })
+                .max_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+        })
+    };
     struct RevisionHit {
         id: String,
         lexical: f64,
         vector: Option<f64>,
+        embedding_profile: Option<String>,
         occurrences: Vec<SearchOccurrence>,
     }
     let mut hits = Vec::new();
@@ -942,15 +1034,17 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
             }
             let occ = occurrences.get(id).cloned().unwrap_or_default();
             let (_, _, title) = owner(&v.ctx.records, r);
-            let vs = vector.and_then(|x| {
-                embeddings
-                    .get(&(id.clone(), x.model.clone(), x.dim))
-                    .and_then(|record| record.as_embedding())
-                    .and_then(|embedding| cosine(&x.values, &embedding.values))
-            });
+            let embedding = matching_embedding(id);
+            let vs = embedding.as_ref().map(|e| e.0);
             let lexical = lex(
                 &query_features,
-                &format!("{} {} {}", title, d.body, d.tags.join(" ")),
+                &format!(
+                    "{} {} {} {}",
+                    title,
+                    d.body,
+                    d.tags.join(" "),
+                    d.summary.as_ref().map(|s| s.text.as_str()).unwrap_or("")
+                ),
             );
             if lexical > 0.0 || vs.is_some() || query_features.words.is_empty() && vector.is_none()
             {
@@ -965,6 +1059,7 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
                         id: id.clone(),
                         lexical,
                         vector: vs,
+                        embedding_profile: embedding.map(|e| e.1),
                         occurrences: occ,
                     });
                 }
@@ -1010,6 +1105,9 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.id.cmp(&b.id))
     });
+    let mut context_used = 0;
+    let mut context_attempts = 0;
+    let mut context_truncated = false;
     let results = hits
         .iter()
         .take(limit)
@@ -1022,14 +1120,42 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
             let vector_rank = vpos.get(id).copied();
             let score = lexical_rank.map_or(0.0, |rank| 1.0 / (60.0 + rank as f64))
                 + vector_rank.map_or(0.0, |rank| 1.0 / (60.0 + rank as f64));
+            let mut contexts = Vec::new();
+            if q.context_budget_chars > 0 {
+                for item in &hit.occurrences {
+                    if context_attempts >= 128 { context_truncated = true; break; }
+                    if !requested_roles.is_empty() && !roles_match(&requested_roles, &item.occurrence.roles) { continue; }
+                    for depth in (0..=item.occurrence.slot_path.len()).rev() {
+                        if context_attempts >= 128 { context_truncated = true; break; }
+                        context_attempts += 1;
+                        let path = &item.occurrence.slot_path[..depth];
+                        let Ok(target) = graph::resolve_path(&v.ctx, &item.root_revision_id, path) else { continue; };
+                        let Some(parent) = target.as_revision() else { continue; };
+                        let mut goals = v.ctx.records.values().filter(|r|r.as_goal().is_some_and(|g|g.project_id == q.project_id && g.scope.root_revision_id == item.root_revision_id && g.scope.slot_path == path && g.scope.target_revision_id == target.id)).collect::<Vec<_>>();
+                        goals.sort_by(|a,b| (b.seq,&b.id).cmp(&(a.seq,&a.id)));
+                        let ancestor_roles = path.split_last().and_then(|(last,prefix)| graph::resolve_path(&v.ctx,&item.root_revision_id,prefix).ok().and_then(|r|r.as_revision()).and_then(|r|r.slots.iter().find(|s|&s.slot_id==last)).map(|s|s.roles.clone())).unwrap_or_default();
+                        let mut packet = json!({"root_revision_id":item.root_revision_id,"slot_path":path,"target_revision_id":target.id,"roles":ancestor_roles,"body":short(&parent.body,1000),"body_truncated":parent.body.chars().count()>1000,"summary":parent.summary,"goals_truncated":goals.len()>16,"goal_history":goals.iter().take(16).map(|r|json!({"id":r.id,"seq":r.seq,"statement":r.as_goal().unwrap().statement,"origin":r.as_goal().unwrap().origin})).collect::<Vec<_>>()});
+                        packet["goal_selection"] = json!("scope_history_not_active_baseline");
+                        compact_context(&mut packet, q.context_budget_chars.saturating_sub(context_used));
+                        let size = util::canonical_json(&packet).chars().count();
+                        if context_used + size <= q.context_budget_chars {
+                            context_used += size;
+                            contexts.push(packet);
+                        } else { context_truncated = true; }
+                    }
+                }
+            }
             json!({
                 "revision_id": id,
                 "entity_id": entity_id,
                 "entity_kind": entity_kind,
                 "title": title,
                 "snippet": short(&revision.body, 400),
+                "summary": revision.summary,
+                "embedding_profile": hit.embedding_profile,
+                "occurrence_contexts": contexts,
                 "tags": revision.tags,
-                "occurrences": hit.occurrences.iter().map(|item| json!({
+                "occurrences": hit.occurrences.iter().filter(|item|requested_roles.is_empty() || roles_match(&requested_roles,&item.occurrence.roles)).map(|item| json!({
                     "root_revision_id": item.root_revision_id,
                     "slot_path": item.occurrence.slot_path,
                     "roles": item.occurrence.roles,
@@ -1299,11 +1425,7 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
     };
     let matching = eligible
         .iter()
-        .filter(|id| {
-            vector
-                .and_then(|x| embeddings.get(&(id.to_string(), x.model.clone(), x.dim)))
-                .is_some()
-        })
+        .filter(|id| matching_embedding(id).is_some())
         .count();
     let eligible_ideas = eligible
         .iter()
@@ -1313,6 +1435,9 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
             };
             let (_, entity_kind, _) = owner(&v.ctx.records, record);
             entity_kind == "idea"
+                && record
+                    .as_revision()
+                    .is_some_and(|r| q.tags.iter().all(|tag| r.tags.contains(tag)))
                 && (requested_roles.is_empty()
                     || occurrences.get(id.as_str()).is_some_and(|uses| {
                         uses.iter()
@@ -1322,12 +1447,9 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
         .collect::<Vec<_>>();
     let matching_ideas = eligible_ideas
         .iter()
-        .filter(|id| {
-            vector
-                .and_then(|x| embeddings.get(&(id.to_string(), x.model.clone(), x.dim)))
-                .is_some()
-        })
+        .filter(|id| matching_embedding(id).is_some())
         .count();
+    let profile_coverage = profiles.iter().map(|profile|json!({"profile":profile,"indexed_idea_revisions":eligible_ideas.iter().filter(|id|vector.is_some_and(|x|embeddings.contains_key(&(id.to_string(),profile.clone(),x.dim)))).count()})).collect::<Vec<_>>();
     let target_roles = |target: &str| occurrences.get(target).cloned().unwrap_or_default();
     let observation_in_scope = |observation: &ObservationData| {
         observation.project_id == q.project_id
@@ -1553,9 +1675,12 @@ pub fn search(ctx: &Context, body: Value) -> ApiResult<Value> {
         "records": records,
         "related": related,
         "candidates": candidates,
+        "context": {"budget_chars":q.context_budget_chars,"used_chars":context_used,"truncated":context_truncated,"budget_unit":"sum of canonical JSON packet Unicode characters; result metadata is separate"},
         "vector_status": {
             "requested": q.vector.is_some(),
             "model": q.vector.as_ref().map(|vector| &vector.model),
+            "models": profiles,
+            "profile_coverage": profile_coverage,
             "dim": q.vector.as_ref().map(|vector| vector.dim),
             "eligible_revisions": eligible.len(),
             "with_matching_embedding": matching,
@@ -2003,6 +2128,73 @@ mod tests {
         let mut p = Params::new();
         p.insert("known_seq".into(), "3".into());
         assert!(!view(&c, &p).unwrap().ctx.records.contains_key("rev_l5"));
+    }
+
+    #[test]
+    fn search_context_preserves_ancestor_roles_history_cutoff_and_budget() {
+        let mut ctx = related_context();
+        if let RecordData::Revision(rev) = &mut ctx.records.get_mut("rev_root").unwrap().data {
+            rev.slots[0].roles = vec!["infra".into()];
+        }
+        if let RecordData::Revision(rev) = &mut ctx.records.get_mut("rev_schema").unwrap().data {
+            rev.slots[1].revision_id = "rev_be".into();
+        }
+        let goal = fixtures::record(
+            "goal_future",
+            11,
+            RecordKind::Goal,
+            json!({"project_id":"proj_q","scope":{"root_revision_id":"rev_root","slot_path":["schema","be"],"target_revision_id":"rev_be"},"statement":"later goal","criteria":[],"origin":"ai_proposed","actor":"test"}),
+        );
+        ctx.records.insert(goal.id.clone(), goal);
+        ctx.seq = 11;
+        let request = json!({"project_id":"proj_q","query":"백엔드 정책","roles":["be"],"context_budget_chars":8000});
+        let found = search(&ctx, request.clone()).unwrap();
+        let hit = found["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["revision_id"] == "rev_be")
+            .unwrap();
+        assert_eq!(hit["occurrences"].as_array().unwrap().len(), 1);
+        let contexts = hit["occurrence_contexts"].as_array().unwrap();
+        assert_eq!(contexts[0]["roles"], json!(["be"]));
+        assert_eq!(contexts[1]["roles"], json!(["infra"]));
+        assert_eq!(contexts[2]["roles"], json!([]));
+        assert_eq!(contexts[0]["goal_history"][0]["id"], "goal_future");
+        assert_eq!(
+            contexts[0]["goal_selection"],
+            "scope_history_not_active_baseline"
+        );
+        let mut past = request.clone();
+        past["known_seq"] = json!(10);
+        assert!(!util::canonical_json(&search(&ctx, past).unwrap()).contains("goal_future"));
+        let mut small = request;
+        small["context_budget_chars"] = json!(600);
+        let result = search(&ctx, small).unwrap();
+        let used = result["context"]["used_chars"].as_u64().unwrap();
+        assert!(used > 0 && used <= 600);
+        assert_eq!(result["context"]["truncated"], true);
+    }
+
+    #[test]
+    fn profile_expansion_rejects_other_model_spaces() {
+        let body = json!({"project_id":"proj_q","query":"정책","vector":{"model":"model@sha256:aaa/idea-body-v1","dim":2,"values":[1.0,0.0]}});
+        assert!(search_with_profiles(
+            &related_context(),
+            body.clone(),
+            &["model@sha256:bbb/idea-body-summary-v2".into()]
+        )
+        .is_err());
+        assert!(search_with_profiles(
+            &related_context(),
+            body,
+            &["model@sha256:aaa/idea-body-summary-v2".into()]
+        )
+        .is_ok());
+        let mut packet = json!({"body":"조건을 보존할 긴 본문".repeat(100),"summary":null,"goal_history":[],"body_truncated":false});
+        compact_context(&mut packet, 256);
+        assert!(util::canonical_json(&packet).chars().count() <= 256);
+        assert_eq!(packet["body_truncated"], true);
     }
 
     #[test]

@@ -124,6 +124,7 @@ if [[ "$test_suite" == evidence ]]; then
   python3 tests/context_evidence.py --base-url "$primary_url" --output-dir "$lifecycle_dir/context"
   python3 tests/semantic_probes.py --base-url "$primary_url" --output-dir "$lifecycle_dir/semantic-probes"
   python3 tests/model_roundtrip.py --base-url "$primary_url" --output-dir "$lifecycle_dir/model-roundtrip"
+  python3 tests/summary_ingest.py --base-url "$primary_url" --output-dir "$lifecycle_dir/summary-ingest"
   python3 tests/integrity_audit.py --base-url "$primary_url" --output-dir "$lifecycle_dir/audit-before"
 elif [[ "$test_suite" == lifecycle ]]; then
   python3 tests/lifecycle.py --base-url "$primary_url" --output-dir "$lifecycle_dir"

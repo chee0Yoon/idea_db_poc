@@ -73,6 +73,49 @@ fn entity(id: &str, kind: &str, project: &str) -> Value {
 // ---------------------------------------------------------------- references
 
 #[test]
+fn summary_requires_bounded_ai_inference_from_the_body_capture() {
+    let c = login_ctx();
+    let mut rev = revision(
+        "rev_summary",
+        "ent_summary",
+        "5회 실패하면 30분 잠근다. 관리자는 제외한다.",
+        json!([]),
+    );
+    rev["data"]["source"]["capture_id"] = json!("cap_summary");
+    rev["data"]["summary"] = json!({"text":"로그인 잠금, 관리자 제외","source":{"origin":"ai","claim_mode":"inferred","skill":"summary-test","capture_id":"cap_summary"}});
+    let records = json!([
+        {"id":"cap_summary","kind":"capture","data":{"project_id":"proj_login","content":"로그인에서 5회 실패하면 30분 잠근다. 관리자는 제외한다.","source_kind":"note"}},
+        entity("ent_summary","idea","proj_login"),rev
+    ]);
+    assert!(run(&package(records.clone()), &c).is_ok());
+    for (field, value, code) in [
+        ("origin", json!("human"), "invalid_summary_source"),
+        ("claim_mode", json!("extracted"), "invalid_summary_source"),
+        ("capture_id", Value::Null, "invalid_summary_source"),
+        ("capture_id", json!("cap_other"), "invalid_summary_source"),
+        (
+            "source_anchor",
+            json!({"capture_id":"cap_summary","start":0,"end":2}),
+            "invalid_summary_source",
+        ),
+        ("skill", Value::Null, "invalid_field"),
+    ] {
+        let mut modified = records.clone();
+        modified[2]["data"]["summary"]["source"][field] = value;
+        expect_code(&package(modified), &c, code);
+    }
+    for text in ["".to_string(), "  \n\t".to_string(), "요".repeat(2001)] {
+        let mut modified = records.clone();
+        modified[2]["data"]["summary"]["text"] = json!(text);
+        assert!(run(&package(modified), &c).is_err());
+    }
+    // Shape validation does not prove entailment. Keep that distinction explicit.
+    let mut unsupported = records;
+    unsupported[2]["data"]["summary"]["text"] = json!("모든 사용자는 잠금에서 제외된다.");
+    assert!(run(&package(unsupported), &c).is_ok());
+}
+
+#[test]
 fn unknown_and_mistyped_references_are_rejected() {
     let ctx = login_ctx();
     expect_code(

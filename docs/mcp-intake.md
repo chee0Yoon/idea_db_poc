@@ -18,6 +18,16 @@ an applied upload cannot be discarded.
    R&R belongs on occurrence slots. One Idea has one independently testable/reusable
    responsibility. Preserve conjunctions, exceptions, numeric thresholds and negative
    requirements in parent rules and child constraints. Ambiguity stays a Candidate.
+   Keep a rule and its material exception together: a sentence boundary is not an
+   atom boundary. Resolve subject/referent only from the saved source. Prefer a
+   complete independently replaceable claim over many context-free fragments.
+   New revisions may include `summary: {text, source}` with 1..2000 characters,
+   AI/inferred provenance, model or skill, the body's same required capture_id,
+   and no source_anchor. This intrinsic summary restates source-supported meaning;
+   it must not inject a parent goal, an occurrence's role or a completion claim.
+   Project/Schema/Core summaries describe their own content separately. Existing
+   immutable revisions remain unchanged; do not create fake body corrections just
+   to retrofit summaries. Copied ancestors lose their summary after replacement.
 4. For every source requirement record the source Unicode-scalar span and its outcome:
    accepted atomic IDs, deferred candidate, or explicit exclusion with reason. Retain
    this coverage ledger as a Capture in the package. Counts of accounted requirements
@@ -29,6 +39,13 @@ an applied upload cannot be discarded.
    digest, and durably stages the prepared packet in Neo4j. It returns `upload_id`,
    `prepared_digest`, `review_records`, `validation`, and `mappings`; vectors never
    need to pass back through the AI context.
+   `review_records` contains the exact body/summary for review. `embedding_inputs`
+   gives revision_id, input_digest, profile and includes_summary;
+   `summary_review_required` does not certify semantic fidelity. Summarized Ideas
+   embed the exact UTF-8 `Summary:\n{text}\n\nBody:\n{body}` under
+   `/idea-body-summary-v2`; other Ideas keep body-only `/idea-body-v1` inputs.
+   `embedding_profiles` lists actual document profiles. Legacy `embedding_profile`
+   is the provider's base body-v1 profile; use the plural list/input rows for review.
    Provider failure is an error; it never means semantic indexing succeeded.
 6. Review mappings in their project/root/path/role/time context. Similarity is a
    retrieval score, not logical equivalence, impact, or completed work. Explicitly
@@ -68,6 +85,25 @@ subsequently updated. Apply and retries make no model request. Hybrid search use
 the active profile and reports exact matching index coverage; an old model profile
 is never silently compared with a new one. Source origin/model/actor are client
 provenance claims, not authenticated human identity.
+
+MCP search `embedding_format` is `auto` (default), `body_v1` or `body_summary_v2`.
+Auto explicitly compares both input formats of the same immutable model, taking
+one best cosine score per revision before lexical/vector rank fusion. Results
+disclose their selected embedding_profile; embedding_profiles and per-profile
+coverage disclose the transition. Summaries also participate in lexical search
+and remain separate from source snippets. A model digest change never silently
+compares different model spaces.
+
+`context_budget_chars` is 0..32000 (MCP default 8000, HTTP default 0). It charges
+the sum of canonical JSON packet Unicode characters across `occurrence_contexts`,
+not model tokens or the rest of the response. Context is appended after ranking,
+nearest occurrence first, with each ancestor's own root/path/role. Known-time/root
+filters apply. `goal_history` lists scoped goals in newest-first order; its
+`goal_selection: scope_history_not_active_baseline` explicitly does not select an
+active target. Use `idea_goals` for baseline/assessment status. Up to 128 packets
+are considered and 16 goals per packet; budget pressure compacts text or omits
+packets/goals with truncation flags. Fetch exact record IDs when full conditions
+are needed. Context expansion is retrieval material, not evidence of applicability.
 
 When the user asks for expected goals and completion, inspect each Project, Schema,
 and recursive Core occurrence for its own goal, not only descendant goals. Locally

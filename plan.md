@@ -48,6 +48,8 @@ flowchart LR
 
 ## 입력 및 트랜잭션
 
+2026-09-07 추가: [원자화·요약 구조](docs/atomization-and-summary.md). 원자는 독립적으로 교체 가능한 완전한 주장과 조건/예외를 보존한다. 새 Revision에 출처가 있는 AI 요약을 허용하고 Idea 임베딩은 요약+본문을 사용한다. 기존 본문 임베딩은 유지한다. 공유 Idea의 목표는 exact root/path의 검색 문맥으로 분리하며 요약 자체로 적합성이나 달성률을 판단하지 않는다.
+
 원문 MCP 저장 → 로컬 구독 AI가 원자화·구조화 → MCP upload preview → 로컬 임베딩 및 유사 후보 매핑 → 클라이언트 검토 → 준비된 업로드 ID로 MCP 적용.
 
 대시보드는 조회·검색·이력 탐색 전용이다. DB는 원문을 분할하거나 생성형 AI 추론을 수행하지 않는다. CRUD의 유일한 경로는 공식 SDK 기반 stdio MCP이며 REST 쓰기 경로는 제거한다. 입력 계약과 재시도 절차는 [mcp-intake.md](docs/mcp-intake.md)를 따른다.

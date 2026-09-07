@@ -45,6 +45,12 @@ def reseal(document):
 
 
 class IntegrityAuditTest(unittest.TestCase):
+    def test_summary_source_cannot_point_to_another_or_missing_capture(self):
+        document = valid_export()
+        document["content"]["records"][3]["data"]["summary"] = {
+            "text": "shared summary", "source": {"origin": "ai", "claim_mode": "inferred", "skill": "test", "capture_id": "cap_missing"}}
+        self.assert_detected(reseal(document), "invalid summary source")
+
     def assert_detected(self, document, needle):
         report = audit.audit_export(document)
         self.assertFalse(report["ok"], report)
