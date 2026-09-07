@@ -6,7 +6,12 @@
     goals: '/api/goals', export: '/api/export'
   };
   const $ = (id) => document.getElementById(id);
-  const state = { projectId: '', snapshot: null, selected: null, knownSeq: null, rootRevisionId: null };
+  const route = new URLSearchParams(window.location.search);
+  const state = {
+    projectId: route.get('project') || '', snapshot: null, selected: null, knownSeq: null, rootRevisionId: null,
+    view: route.get('view') === '3d' ? '3d' : '2d', exportProjectId: null, exportRecords: null, graph: null, contextGeneration: 0, recordGeneration: 0
+  };
+  let graphRenderer = null;
   const maxTreeNodes = () => Number($('max-nodes')?.value || 5000);
   const asArray = (value) => Array.isArray(value) ? value : [];
   const text = (value, fallback = '—') => value === null || value === undefined || value === '' ? fallback : String(value);
@@ -23,6 +28,13 @@
   const dialog = (id) => $(id).showModal();
   const errorMessage = (error) => error instanceof Error ? error.message : String(error);
   const formatValue = (value) => value === null || value === undefined ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value);
+
+  function updateRoute() {
+    const url = new URL(window.location.href);
+    if (state.projectId) url.searchParams.set('project', state.projectId); else url.searchParams.delete('project');
+    if (state.view === '3d') url.searchParams.set('view', '3d'); else url.searchParams.delete('view');
+    window.history.replaceState(null, '', url);
+  }
 
   function notify(message, type = '') {
     const node = document.createElement('div');
@@ -136,8 +148,11 @@
 
   async function openLinkedRecord(recordId) {
     if (!recordId) return;
+    const generation = state.contextGeneration;
+    const requestGeneration = ++state.recordGeneration;
     try {
       const payload = await api(`${ENDPOINTS.record(recordId)}${query({ include: 'links,lineage,evidence,occurrences', ...recordScope() })}`);
+      if (generation !== state.contextGeneration || requestGeneration !== state.recordGeneration) return;
       if (payload.record?.kind === 'entity') {
         const current = asArray(state.snapshot?.nodes).find((node) => node.entity_id === recordId);
         const fallback = asArray(payload.revisions_of_entity).sort((a, b) => b.seq - a.seq)[0];
@@ -145,6 +160,7 @@
       }
       renderRecord(payload, null);
     } catch (error) {
+      if (generation !== state.contextGeneration || requestGeneration !== state.recordGeneration) return;
       notify(`연결된 기록을 열지 못했습니다: ${errorMessage(error)}`, 'error');
     }
   }
@@ -306,13 +322,214 @@
   }
 
   async function selectRecord(revisionId, occurrence = null) {
+    const generation = state.contextGeneration;
+    const requestGeneration = ++state.recordGeneration;
     try {
+      const payload = await api(`${ENDPOINTS.record(revisionId)}${query({ include: 'links,lineage,evidence,occurrences', ...recordScope() })}`);
+      if (generation !== state.contextGeneration || requestGeneration !== state.recordGeneration) return;
       document.querySelectorAll('.tree-item[aria-current="true"]').forEach((node) => node.removeAttribute('aria-current'));
       document.querySelector(`.tree-item[data-record-id="${CSS.escape(String(revisionId))}"]`)?.setAttribute('aria-current', 'true');
-      const payload = await api(`${ENDPOINTS.record(revisionId)}${query({ include: 'links,lineage,evidence,occurrences', ...recordScope() })}`);
       renderRecord(payload, occurrence);
     } catch (error) {
+      if (generation !== state.contextGeneration || requestGeneration !== state.recordGeneration) return;
       notify(`기록을 불러오지 못했습니다: ${errorMessage(error)}`, 'error');
+    }
+  }
+
+  function setView(view) {
+    state.view = view === '3d' ? '3d' : '2d';
+    $('view-2d').setAttribute('aria-pressed', String(state.view === '2d'));
+    $('view-3d').setAttribute('aria-pressed', String(state.view === '3d'));
+    $('graph-workbench').hidden = state.view !== '3d';
+    updateRoute();
+    if (state.view === '3d' && state.projectId) loadGraph();
+  }
+
+  function graphTime(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.valueOf()) ? text(value) : date.toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'medium' });
+  }
+
+  function useHistoricalScope() {
+    $('stream-select').value = 'working';
+    $('effective-at').value = '';
+  }
+
+  function captureTimelineTitle(capture) {
+    const content = typeof capture?.data?.content === 'string' ? capture.data.content.trim() : '';
+    const heading = content.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/m);
+    if (heading?.[1]) return heading[1].trim();
+    if (content && !/^[{[]/.test(content)) return content.split('\n').find((line) => line.trim())?.trim().slice(0, 90) || null;
+    return null;
+  }
+
+  function observationTimelineTitle(observation, recordsById) {
+    const data = observation?.data || {};
+    const revision = recordsById.get(data.target_revision_id);
+    const target = recordsById.get(revision?.data?.entity_id)?.data?.title;
+    const metric = text(data.metric, '관측');
+    const status = data.status ? ` · ${data.status}` : '';
+    return `${target || '대상 미지정'} · ${metric}${status}`;
+  }
+
+  async function loadProjectExport(generation = state.contextGeneration) {
+    const requestedProject = state.projectId;
+    if (!requestedProject) return [];
+    if (generation !== state.contextGeneration) return [];
+    if (state.exportProjectId === requestedProject && Array.isArray(state.exportRecords)) return state.exportRecords;
+    const payload = await api(`${ENDPOINTS.export}${query({ project_id: requestedProject, include_receipts: false })}`);
+    const records = asArray(payload?.content?.records);
+    if (generation !== state.contextGeneration || state.projectId !== requestedProject) return [];
+    state.exportProjectId = requestedProject;
+    state.exportRecords = records;
+    return records;
+  }
+
+  function graphNodeList(graph) {
+    const holder = $('graph-node-list');
+    clear(holder);
+    const nodes = asArray(graph?.nodes);
+    if (!nodes.length) {
+      const item = document.createElement('li');
+      item.className = 'muted';
+      item.textContent = '프로젝트 이력에서 표시할 revision이 없습니다.';
+      holder.append(item);
+      return;
+    }
+    nodes.forEach((node) => {
+      const item = document.createElement('li');
+      item.className = 'graph-node-row';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = text(node.title, node.revision_id || node.id);
+      button.addEventListener('click', () => selectGraphNode(node));
+      const meta = document.createElement('span');
+      meta.className = 'graph-node-meta';
+      meta.textContent = `${text(node.kind)} · seq ${text(node.seq)} · 깊이 ${text(node.y)} · 층 ${text(node.layer)} · 사용 ${asArray(node.usages).length}`;
+      item.append(button, meta);
+      holder.append(item);
+    });
+  }
+
+  function filteredGraph() {
+    const graph = state.graph;
+    if (!graph) return null;
+    const layer = $('graph-layer-filter').value;
+    if (layer === '') return graph;
+    const nodes = asArray(graph.nodes).filter((node) => String(node.layer) === layer);
+    const ids = new Set(nodes.map((node) => node.id));
+    return { ...graph, nodes, edges: asArray(graph.edges).filter((edge) => ids.has(edge.source) && ids.has(edge.target)) };
+  }
+
+  function renderGraph() {
+    const graph = filteredGraph();
+    if (!graphRenderer || !graph) return;
+    graphRenderer.setGraph(graph);
+    graphNodeList(graph);
+    const all = state.graph;
+    const times = asArray(graph.nodes).map((node) => node.recorded_at).filter(Boolean).sort();
+    const overlaps = new Map();
+    asArray(graph.nodes).forEach((node) => {
+      const key = `${node.x}|${node.y}|${node.z}`;
+      overlaps.set(key, (overlaps.get(key) || 0) + 1);
+    });
+    const collisionGroups = [...overlaps.values()].filter((count) => count > 1).length;
+    const truncation = all.truncation || {};
+    const limits = [];
+    if (truncation.truncated || Number(truncation.omitted_nodes) > 0) limits.push(`노드 한도 ${truncation.max_nodes || 5000}: ${truncation.omitted_nodes || 0}개 제외`);
+    if (truncation.occurrence_limited) limits.push(`사용 위치 탐색 ${truncation.max_occurrences || 20000}회 한도에서 중단`);
+    if (truncation.depth_limited) limits.push(`깊이 한도 ${truncation.max_depth || 32}: ${truncation.depth_limited}개 중단`);
+    if (truncation.cycles) limits.push(`순환 ${truncation.cycles}개 감지`);
+    $('graph-summary').textContent = `프로젝트 전체 이력 · 표시 노드 ${asArray(graph.nodes).length}/${asArray(all.nodes).length} · edge ${asArray(graph.edges).length}/${asArray(all.edges).length}${times.length ? ` · 기록 ${graphTime(times[0])} — ${graphTime(times[times.length - 1])}` : ''}${collisionGroups ? ` · 같은 축 좌표 ${collisionGroups}묶음은 선택 가능하도록 시각적으로 펼침` : ''}${limits.length ? ` · ${limits.join(' · ')}` : ''}`;
+  }
+
+  function selectGraphNode(node) {
+    graphRenderer?.setSelected(node.id);
+    const selection = $('graph-selection');
+    clear(selection);
+    const title = document.createElement('span');
+    title.textContent = `${text(node.title, node.revision_id || node.id)} · seq ${text(node.seq)} · ${graphTime(node.recorded_at)}`;
+    selection.append(title);
+    const usages = asArray(node.usages);
+    if (usages.length === 1 && node.revision_id) {
+      openGraphOccurrence(node, usages[0]);
+      return;
+    }
+    if (usages.length > 1 && node.revision_id) {
+      const picker = document.createElement('div');
+      picker.className = 'occurrence-picker';
+      const label = document.createElement('span');
+      label.className = 'result-meta';
+      label.textContent = '공유 revision입니다. 사용 위치를 명시적으로 선택하세요.';
+      picker.append(label);
+      usages.forEach((usage) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'occurrence-button';
+        button.textContent = occurrenceLabel({ ...usage, revision_id: node.revision_id });
+        button.addEventListener('click', () => openGraphOccurrence(node, usage));
+        picker.append(button);
+      });
+      selection.append(picker);
+      return;
+    }
+    if (node.revision_id) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'inline-button';
+      button.textContent = '기록 상세 열기';
+      button.addEventListener('click', () => openGraphRecord(node));
+      selection.append(document.createTextNode(' · '), button);
+    }
+  }
+
+  async function openGraphRecord(node) {
+    const requestedProject = state.projectId;
+    useHistoricalScope();
+    state.rootRevisionId = null;
+    state.knownSeq = Number.isFinite(Number(node.seq)) ? Number(node.seq) : null;
+    $('known-at').value = '';
+    const generation = await loadProject();
+    if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
+    await selectRecord(node.revision_id);
+  }
+
+  async function openGraphOccurrence(node, usage) {
+    const requestedProject = state.projectId;
+    useHistoricalScope();
+    const rootNode = asArray(state.graph?.nodes).find((candidate) => candidate.revision_id === usage.root_revision_id);
+    state.rootRevisionId = usage.root_revision_id || null;
+    state.knownSeq = Math.max(Number(node.seq) || 0, Number(rootNode?.seq) || 0) || null;
+    $('known-at').value = '';
+    const generation = await loadProject();
+    if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
+    await selectRecord(node.revision_id, { ...usage, revision_id: node.revision_id });
+  }
+
+  async function loadGraph(generation = state.contextGeneration) {
+    $('graph-workbench').hidden = false;
+    if (!window.IdeaGraphModel || !window.IdeaGraph3D) {
+      $('graph-summary').textContent = '3D 그래프 모듈을 불러오지 못했습니다.';
+      return;
+    }
+    try {
+      const requestedProject = state.projectId;
+      const records = await loadProjectExport(generation);
+      if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
+      state.graph = window.IdeaGraphModel.build(records, requestedProject);
+      if (!graphRenderer) graphRenderer = window.IdeaGraph3D.create($('graph-canvas'), { onSelect: selectGraphNode });
+      const select = $('graph-layer-filter');
+      const prior = select.value;
+      clear(select);
+      select.add(new Option('모든 층', ''));
+      asArray(state.graph.layers).forEach((layer) => select.add(new Option(`${layer.index} · ${layer.label}`, String(layer.index))));
+      select.value = [...select.options].some((option) => option.value === prior) ? prior : '';
+      renderGraph();
+    } catch (error) {
+      if (generation !== state.contextGeneration) return;
+      $('graph-summary').textContent = `프로젝트 이력 export를 불러오지 못했습니다: ${errorMessage(error)}`;
+      clear($('graph-node-list'));
+      notify(errorMessage(error), 'error');
     }
   }
 
@@ -328,10 +545,13 @@
         state.projectId = '';
         state.snapshot = null;
         renderTree();
-        $('tree-summary').textContent = '이 DB는 비어 있습니다. export 파일은 자동으로 불러오지 않습니다. 빈 DB에서만 “export 가져오기”를 사용할 수 있습니다.';
+        $('tree-summary').textContent = '이 DB는 비어 있습니다. export 파일은 자동으로 불러오지 않습니다. 프로젝트와 원문 입력은 로컬 AI MCP에서 실행하세요.';
         return;
       }
-      projects.forEach((project) => select.add(new Option(project.title, project.project_id)));
+      projects.forEach((project) => {
+        const suffix = /(?:30\s*(?:step|단계)|lifecycle|라이프사이클)/i.test(text(project.title, '')) ? ' · 라이프사이클 검증' : '';
+        select.add(new Option(`${project.title}${suffix}`, project.project_id));
+      });
       if (!projects.some((project) => project.project_id === state.projectId)) state.projectId = projects[0].project_id;
       select.value = state.projectId;
       await loadProject();
@@ -349,31 +569,56 @@
   }
 
   async function loadProject() {
-    state.projectId = $('project-select').value;
+    const nextProjectId = $('project-select').value;
+    const changingProject = state.projectId !== nextProjectId;
+    const generation = ++state.contextGeneration;
+    state.recordGeneration += 1;
+    if (changingProject) {
+      state.rootRevisionId = null;
+      state.knownSeq = null;
+      $('known-at').value = '';
+      $('effective-at').value = '';
+    }
+    state.projectId = nextProjectId;
+    if (state.exportProjectId !== state.projectId) {
+      state.exportProjectId = null;
+      state.exportRecords = null;
+      state.graph = null;
+    }
+    updateRoute();
     state.selected = null;
     $('record-detail').hidden = true;
     $('record-empty').hidden = false;
     if (!state.projectId) {
       state.snapshot = null;
       renderTree();
-      return;
+      return generation;
     }
     try {
-      state.snapshot = await api(`${ENDPOINTS.snapshot}${query({ ...scope(), max_nodes: maxTreeNodes(), depth: 32 })}`);
+      const exportPromise = loadProjectExport(generation);
+      const snapshot = await api(`${ENDPOINTS.snapshot}${query({ ...scope(), max_nodes: maxTreeNodes(), depth: 32 })}`);
+      if (generation !== state.contextGeneration) return null;
+      state.snapshot = snapshot;
       renderTree();
       const selected = state.snapshot.selected_by || {};
-      const source = state.snapshot.selected_by?.publication_id ? `official publication ${state.snapshot.selected_by.publication_id}` : `working head ${state.snapshot.selected_by?.head_change_id || '없음'}`;
+      const source = state.rootRevisionId ? '선택한 이력' : (state.snapshot.selected_by?.publication_id ? `official publication ${state.snapshot.selected_by.publication_id}` : `working head ${state.snapshot.selected_by?.head_change_id || '없음'}`);
       const lowerLimitNotice = maxTreeNodes() < 5000 ? ` · 낮은 표시 한도 ${maxTreeNodes()}개 선택됨` : '';
       $('tree-summary').textContent = state.snapshot.root_revision_id ? `${source} · revision ${state.snapshot.root_revision_id} · server known seq ${selected.known_seq}${lowerLimitNotice}${state.snapshot.truncated ? ` · ${maxTreeNodes()}개에서 잘림` : ''}` : '선택한 서버 기록 시점에는 head가 없습니다.';
-      await Promise.all([loadGoals(), loadTimeline()]);
+      await Promise.all([loadGoals(generation), exportPromise]);
+      if (generation !== state.contextGeneration) return null;
+      loadTimeline(generation);
+      if (state.view === '3d') await loadGraph(generation);
       if (state.snapshot.root_revision_id) {
         await selectRecord(state.snapshot.root_revision_id, { root_revision_id: state.snapshot.root_revision_id, revision_id: state.snapshot.root_revision_id, slot_path: [], roles: [] });
       }
+      return generation === state.contextGeneration ? generation : null;
     } catch (error) {
+      if (generation !== state.contextGeneration) return null;
       state.snapshot = null;
       renderTree();
       $('tree-summary').textContent = `구성을 불러오지 못했습니다: ${errorMessage(error)}`;
       notify(errorMessage(error), 'error');
+      return null;
     }
   }
 
@@ -437,8 +682,9 @@
     }
   }
 
-  async function loadGoals() {
+  async function loadGoals(generation = state.contextGeneration) {
     const holder = $('goal-state');
+    if (generation !== state.contextGeneration) return;
     clear(holder);
     if (!state.snapshot?.root_revision_id) {
       holder.className = 'goal-state muted compact';
@@ -447,6 +693,7 @@
     }
     try {
       const payload = await api(`${ENDPOINTS.goals}${query({ ...scope(), root_revision_id: state.snapshot.root_revision_id, max_nodes: maxTreeNodes() })}`);
+      if (generation !== state.contextGeneration) return;
       const goals = asArray(payload.goals);
       const stale = asArray(payload.stale_assessments);
       if (!goals.length && !stale.length) {
@@ -498,53 +745,111 @@
         });
       }
     } catch (error) {
+      if (generation !== state.contextGeneration) return;
       holder.className = 'goal-state muted compact';
       holder.textContent = `평가를 불러오지 못했습니다: ${errorMessage(error)}`;
     }
   }
 
-  async function loadTimeline() {
+  async function loadTimeline(generation = state.contextGeneration) {
     const holder = $('timeline');
+    if (generation !== state.contextGeneration) return;
     clear(holder);
     if (!state.projectId) return;
     try {
-      const payload = await api(`${ENDPOINTS.state}${query({ project_id: state.projectId, kinds: 'head_change,publication', max_seq: state.snapshot?.selected_by?.known_seq, limit: 100 })}`);
-      const records = asArray(payload.records).sort((a, b) => b.seq - a.seq);
-      if (!records.length) {
+      const requestedProject = state.projectId;
+      const records = await loadProjectExport(generation);
+      if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
+      const recordsById = new Map(records.map((record) => [record.id, record]));
+      const groups = new Map();
+      records.forEach((record) => {
+        if (!Number.isFinite(Number(record.seq))) return;
+        const group = groups.get(record.seq) || [];
+        group.push(record);
+        groups.set(record.seq, group);
+      });
+      const steps = [...groups.entries()].sort((a, b) => Number(b[0]) - Number(a[0]));
+      if (!steps.length) {
         const li = document.createElement('li');
         li.className = 'muted';
-        li.textContent = '표시할 방향 변경이나 공식 기록이 없습니다.';
+        li.textContent = '프로젝트 export에 표시할 기록 단계가 없습니다.';
         holder.append(li);
+        $('timeline-summary').textContent = '프로젝트 export에 표시할 기록 단계가 없습니다.';
         return;
       }
-      records.forEach((record) => {
+      const headChanges = records.filter((record) => record.kind === 'head_change' && record.data?.project_id === state.projectId)
+        .sort((a, b) => Number(a.seq) - Number(b.seq));
+      steps.forEach(([seq, stepRecords]) => {
         const li = document.createElement('li');
         const time = document.createElement('time');
-        time.textContent = `서버 기록 ${record.recorded_at}`;
+        const capture = stepRecords.find((record) => record.kind === 'capture');
+        const observation = stepRecords.find((record) => record.kind === 'observation');
+        const eventTime = capture?.data?.occurred_at;
+        time.textContent = `단계 seq ${seq} · 서버 기록 ${text(stepRecords[0]?.recorded_at)}${eventTime ? ` · 원문 발생 ${eventTime}` : ''}`;
         const body = document.createElement('button');
         body.type = 'button';
         body.className = 'timeline-button';
-        const data = record.data || {};
-        body.textContent = record.kind === 'publication' ? `공식 반영 · ${text(data.label, data.root_revision_id)}` : `${text(data.before_revision_id)} → ${text(data.after_revision_id)} · ${text(data.reason)}`;
-        const root = data.root_revision_id || data.after_revision_id;
-        if (root) body.addEventListener('click', () => openHistoricalRoot(root, record.seq));
+        const kinds = [...new Set(stepRecords.map((record) => record.kind))].join(', ');
+        const captureTitle = captureTimelineTitle(capture);
+        const observationTitle = observation ? observationTimelineTitle(observation, recordsById) : null;
+        const title = captureTitle || observationTitle || (capture ? `원문 · ${text(capture.data?.source_kind, '기록')}` : null);
+        body.textContent = title ? `${title} · ${stepRecords.length} 기록 (${kinds})` : `${stepRecords.length} 기록 (${kinds})`;
+        const earlierHeads = headChanges.filter((record) => Number(record.seq) <= Number(seq));
+        const head = earlierHeads[earlierHeads.length - 1];
+        const root = head?.data?.after_revision_id || head?.data?.root_revision_id || null;
+        if (root) body.addEventListener('click', () => openHistoricalRoot(root, seq));
+        else body.disabled = true;
         li.append(time, body);
+        const details = document.createElement('div');
+        details.className = 'timeline-record-links';
+        const priority = { capture: 0, observation: 1, assessment: 2, goal: 3, head_change: 4, publication: 5, revision: 6, link: 7, artifact: 8 };
+        const previewRecords = stepRecords.filter((record) => record.kind !== 'embedding')
+          .sort((a, b) => (priority[a.kind] ?? 50) - (priority[b.kind] ?? 50) || String(a.id).localeCompare(String(b.id)));
+        previewRecords.slice(0, 8).forEach((record) => {
+          const detail = document.createElement('button');
+          detail.type = 'button';
+          detail.className = 'inline-button';
+          detail.textContent = `${record.kind}: ${text(record.data?.title || record.data?.metric || record.data?.label || record.id)}`;
+          detail.addEventListener('click', () => openTimelineRecord(record, root));
+          details.append(detail);
+        });
+        if (previewRecords.length > 8) details.append(document.createTextNode(` 외 ${previewRecords.length - 8}건`));
+        li.append(details);
         holder.append(li);
       });
+      const selected = state.snapshot?.selected_by?.known_seq;
+      $('timeline-summary').textContent = `프로젝트 전체 ${steps.length}단계 · 현재 선택 checkpoint ${selected ?? '현재'} · 각 단계를 누르면 당시 root와 서버 기록 seq를 엽니다.`;
     } catch (error) {
+      if (generation !== state.contextGeneration) return;
       const li = document.createElement('li');
       li.className = 'muted';
       li.textContent = `이력을 불러오지 못했습니다: ${errorMessage(error)}`;
       holder.append(li);
+      $('timeline-summary').textContent = '프로젝트 전체 이력을 불러오지 못했습니다.';
     }
   }
 
   async function openHistoricalRoot(rootRevisionId, known) {
+    const requestedProject = state.projectId;
+    useHistoricalScope();
     state.rootRevisionId = rootRevisionId;
     state.knownSeq = Number.isFinite(Number(known)) ? Number(known) : null;
     $('known-at').value = '';
     notify(`revision ${rootRevisionId} · server known seq ${state.knownSeq ?? '현재'} 범위를 열었습니다.`, 'success');
-    await loadProject();
+    const generation = await loadProject();
+    if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
+    await selectRecord(rootRevisionId, { root_revision_id: rootRevisionId, revision_id: rootRevisionId, slot_path: [], roles: [] });
+  }
+
+  async function openTimelineRecord(record, rootRevisionId) {
+    const requestedProject = state.projectId;
+    useHistoricalScope();
+    state.rootRevisionId = rootRevisionId || null;
+    state.knownSeq = Number.isFinite(Number(record.seq)) ? Number(record.seq) : null;
+    $('known-at').value = '';
+    const generation = await loadProject();
+    if (generation !== state.contextGeneration || state.projectId !== requestedProject) return;
+    await openLinkedRecord(record.id);
   }
 
   async function exportProject() {
@@ -567,12 +872,16 @@
   }
 
   function bind() {
-    $('refresh-button').addEventListener('click', loadProjects);
+    $('refresh-button').addEventListener('click', () => { state.exportProjectId = null; state.exportRecords = null; state.graph = null; loadProjects(); });
     $('project-select').addEventListener('change', loadProject);
     $('stream-select').addEventListener('change', () => { state.rootRevisionId = null; state.knownSeq = null; loadProject(); });
     $('known-at').addEventListener('change', () => { state.rootRevisionId = null; state.knownSeq = null; loadProject(); });
     $('effective-at').addEventListener('change', loadProject);
     $('max-nodes').addEventListener('change', loadProject);
+    $('view-2d').addEventListener('click', () => setView('2d'));
+    $('view-3d').addEventListener('click', () => setView('3d'));
+    $('graph-reset').addEventListener('click', () => graphRenderer?.reset());
+    $('graph-layer-filter').addEventListener('change', renderGraph);
     $('search-form').addEventListener('submit', search);
     $('token-button').addEventListener('click', () => { $('token-input').value = token(); dialog('token-dialog'); });
     $('token-save').addEventListener('click', () => { const value = $('token-input').value.trim(); if (value) sessionStorage.setItem('idea_db.token', value); else sessionStorage.removeItem('idea_db.token'); });
@@ -584,5 +893,6 @@
   }
 
   bind();
+  setView(state.view);
   loadProjects();
 })();

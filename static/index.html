@@ -26,12 +26,19 @@
 
     <main id="main-content" class="workspace">
       <aside class="pane navigator" aria-label="구성 탐색">
-        <div class="pane-title"><div><p class="eyebrow">구성</p><h1>탐색기</h1></div></div>
+        <div class="pane-title"><div><p class="eyebrow">구성</p><h1>탐색기</h1></div><div class="view-toggle" role="group" aria-label="탐색 보기"><button id="view-2d" class="view-button" type="button" aria-pressed="true">2D</button><button id="view-3d" class="view-button" type="button" aria-pressed="false">3D</button></div></div>
         <p class="muted compact" id="tree-summary">서버 기록 시점은 기록된 시각이고, 근거 유효 시점은 관측이 실제 발생한 시각입니다. 입력값은 이 브라우저 시간대로 해석되어 UTC로 전송됩니다.</p>
         <nav id="tree" class="tree" aria-label="프로젝트 구성"></nav>
       </aside>
 
       <section class="pane record-pane" aria-label="선택한 기록">
+        <section id="graph-workbench" class="graph-workbench" hidden aria-labelledby="graph-title">
+          <div class="graph-heading"><div><p class="eyebrow">실제 이력</p><h2 id="graph-title">3D 구조와 기록</h2><p id="graph-summary" class="muted compact">프로젝트 export를 불러오는 중입니다.</p></div><div class="graph-actions"><label>스키마 층 <select id="graph-layer-filter" aria-label="3D 그래프 스키마 층"><option value="">모든 층</option></select></label><button id="graph-reset" class="button secondary" type="button">시점 초기화</button></div></div>
+          <p class="muted compact">X: 서버 기록 시각 · Y: 재귀 구성 깊이 · Z: 비즈니스 스키마 층. 드래그로 회전하고 휠로 확대합니다. 노드를 누르면 사용 위치를 확인합니다.</p>
+          <canvas id="graph-canvas" class="graph-canvas" tabindex="0" aria-label="프로젝트 이력 3D 그래프. 화살표 키로 회전하고 더하기와 빼기로 확대 또는 축소합니다."></canvas>
+          <div id="graph-selection" class="graph-selection muted compact" aria-live="polite"></div>
+          <section class="graph-accessible"><h3>그래프 노드 목록</h3><p class="muted compact">캔버스를 쓰기 어렵다면 아래 실제 노드와 사용 위치를 선택하세요.</p><ul id="graph-node-list" class="linked-list"></ul></section>
+        </section>
         <div id="record-empty" class="empty-state">
           <p class="eyebrow">시작하기</p><h2>프로젝트의 원문과 구성을 보존하세요.</h2>
           <p>이 대시보드는 읽기 전용입니다. 프로젝트 생성, 원문 업로드, 원자화와 패키지 적용은 로컬 AI MCP에서 실행하세요. export 파일은 자동으로 불러오지 않습니다.</p>
@@ -60,13 +67,15 @@
           <div id="search-state" class="muted compact">직접 역할 일치와 관련 문맥을 구분해 표시합니다.</div><div id="search-results" class="result-list"></div>
         </section>
         <section class="panel"><div class="pane-title small"><div><p class="eyebrow">목표</p><h2>기준별 상태</h2></div></div><div id="goal-state" class="goal-state"></div></section>
-        <section class="panel timeline-panel"><div class="pane-title small"><div><p class="eyebrow">이력</p><h2>방향과 기록</h2></div></div><p class="muted compact">항목을 누르면 해당 root와 서버 기록 seq로 스냅샷을 엽니다.</p><ol id="timeline" class="timeline"></ol></section>
+        <section class="panel timeline-panel"><div class="pane-title small"><div><p class="eyebrow">이력</p><h2>방향과 기록</h2></div></div><p id="timeline-summary" class="muted compact">프로젝트 전체 기록을 불러오는 중입니다.</p><ol id="timeline" class="timeline"></ol></section>
       </aside>
     </main>
 
     <div id="status-region" class="status-region" role="status" aria-live="polite"></div>
 
     <dialog id="token-dialog"><form method="dialog" class="dialog-card"><div class="dialog-title"><h2>접속 토큰</h2><button class="icon-button" value="cancel" aria-label="닫기">×</button></div><p class="muted">이 브라우저 탭의 sessionStorage에만 보관하고 서버에는 저장하지 않습니다.</p><label>Bearer token <input id="token-input" type="password" autocomplete="off" spellcheck="false"></label><div class="dialog-actions"><button class="button secondary" id="token-clear" type="button">지우기</button><button class="button" id="token-save" value="default">저장</button></div></form></dialog>
+    <script src="/graph-model.js" defer></script>
+    <script src="/graph3d.js" defer></script>
     <script src="/app.js" defer></script>
   </body>
 </html>

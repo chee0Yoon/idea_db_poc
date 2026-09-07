@@ -1,0 +1,163 @@
+// Real read-only dashboard acceptance against a completed lifecycle project.
+const { chromium } = require('playwright');
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+
+(async () => {
+  const [base, reportPath, output] = process.argv.slice(2);
+  if (!base || !reportPath || !output) throw new Error('base URL, lifecycle report, unused output directory required');
+  if (fs.existsSync(output)) throw new Error('Refusing to replace dashboard evidence');
+  fs.mkdirSync(output, { recursive: true });
+  const fixture = JSON.parse(fs.readFileSync(reportPath));
+  const exported = JSON.parse(fs.readFileSync(path.join(path.dirname(reportPath), 'export.json')));
+  const records = new Map(exported.content.records.map(r => [r.id, r]));
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH || undefined });
+  const page = await browser.newPage({ viewport: { width: 1720, height: 1100 } });
+  const errors = [], writes = [], checks = [];
+  page.on('pageerror', e => errors.push(e.message));
+  page.on('request', r => {
+    if (r.method() !== 'GET' && !(r.method() === 'POST' && new URL(r.url()).pathname === '/api/search')) writes.push(r.url());
+  });
+  const frame = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  try {
+    await page.goto(`${base}/?project=${encodeURIComponent(fixture.project_id)}&view=3d`, { waitUntil: 'networkidle' });
+    await page.locator('#graph-node-list button').first().waitFor();
+    assert.equal(await page.locator('#project-select').inputValue(), fixture.project_id);
+    assert.equal(await page.locator('#view-3d').getAttribute('aria-pressed'), 'true');
+    assert.ok(await page.locator('#graph-workbench').isVisible());
+    checks.push('deep link selects actual lifecycle project and 3D view');
+    assert.equal(await page.locator('#timeline .timeline-button').count(), 30);
+    assert.match(await page.locator('#graph-summary').innerText(), /113/);
+    checks.push('all 30 activity steps and 113 actual revision nodes are exposed');
+    const layerOptions = await page.locator('#graph-layer-filter option').all();
+    assert.ok(layerOptions.length > 2);
+    await page.locator('#graph-layer-filter').selectOption(await layerOptions[1].getAttribute('value'));
+    const filteredCount = await page.locator('#graph-node-list button').count();
+    assert.ok(filteredCount > 0 && filteredCount < 113);
+    await page.locator('#graph-layer-filter').selectOption('');
+    checks.push('schema layer filter narrows actual graph nodes and restores full history');
+    const canvas = page.locator('#graph-canvas');
+    const box = await canvas.boundingBox();
+    assert.ok(box.width > 400 && box.height > 300);
+    const initial = await canvas.screenshot();
+    await page.mouse.move(box.x + box.width * .45, box.y + box.height * .5);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * .65, box.y + box.height * .62, { steps: 12 });
+    await page.mouse.up();
+    await frame();
+    const rotated = await canvas.screenshot();
+    assert.ok(!initial.equals(rotated), 'orbit did not alter the projected graph');
+    await page.mouse.wheel(0, -300);
+    await frame();
+    assert.ok(!rotated.equals(await canvas.screenshot()), 'zoom did not alter graph');
+    await page.locator('#graph-reset').click();
+    await frame();
+    checks.push('real canvas orbit, zoom, and reset controls respond');
+    await page.locator('#graph-node-list button').first().click();
+    await page.locator('#record-detail').waitFor();
+    assert.ok((await page.locator('#graph-selection').innerText()).length > 10);
+    assert.ok((await page.locator('#record-meta').innerText()).includes(fixture.prefix));
+    checks.push('accessible graph node picker opens actual stored revision detail');
+    await page.evaluate(() => { window.scrollTo(0, 0); document.querySelector('.record-pane').scrollTop = 0; });
+    await frame();
+    await page.screenshot({ path: path.join(output, 'dashboard-3d.png') });
+    await page.locator('#view-2d').click();
+    assert.ok(!(await page.locator('#graph-workbench').isVisible()));
+    await page.locator('#stream-select').selectOption('official');
+    await page.waitForLoadState('networkidle');
+    const oldest = fixture.checkpoints[0];
+    await page.locator('#timeline > li').last().locator('button').first().click();
+    await page.waitForFunction(({ root, seq }) => {
+      const s = document.querySelector('#tree-summary').textContent;
+      return s.includes(root) && s.includes(`known seq ${seq}`);
+    }, { root: oldest.working_root, seq: oldest.seq });
+    assert.equal(await page.locator('#timeline .timeline-button').count(), 30);
+    await page.waitForFunction(id => document.querySelector('#record-meta').textContent.includes(id) && !document.querySelector('#record-detail').hidden, oldest.working_root);
+    assert.ok(!(await page.locator('#record-empty').isVisible()));
+    assert.equal(await page.locator('#stream-select').inputValue(), 'working');
+    assert.ok(!(await page.locator('#timeline').innerText()).includes('대상 미지정'));
+    assert.ok(!(await page.locator('#timeline .timeline-button').allTextContents()).some(t => t.includes('/Users/')));
+    checks.push('oldest checkpoint opens exact root detail and sequence; all later steps remain accessible with readable labels');
+    await page.screenshot({ path: path.join(output, 'dashboard-step-01.png') });
+    await page.goto(`${base}/?project=${encodeURIComponent(fixture.project_id)}`, { waitUntil: 'networkidle' });
+    const search = fixture.search_cases.find(c => c.role === 'fe');
+    await page.locator('#search-scope').selectOption('project_history');
+    await page.locator('#search-query').fill(search.query);
+    await page.locator('#role-query').fill('FE');
+    await page.getByRole('button', { name: '검색', exact: true }).click();
+    const expected = records.get(search.expected_top_ids[0]);
+    const title = records.get(expected.data.entity_id).data.title;
+    await page.locator('#search-results .result-record').filter({ hasText: title }).first().click();
+    await page.waitForFunction(id => document.querySelector('#record-meta').textContent.includes(id), expected.id);
+    assert.equal(await page.locator('[name="search-kind"]:checked').count(), 6);
+    checks.push('FE alias and project history search retrieve the expected revised Idea');
+    await page.screenshot({ path: path.join(output, 'dashboard-2d-search.png') });
+    await page.goto(`${base}/?project=${encodeURIComponent(fixture.project_id)}`, { waitUntil: 'networkidle' });
+    const treeIds = await page.locator('#tree .tree-item[data-record-id]').evaluateAll(items => items.map(n => n.dataset.recordId));
+    assert.ok(treeIds.length > 2);
+    const firstId = treeIds[1], lastId = treeIds[2];
+    let releaseRecord, observedRecord;
+    const recordBarrier = new Promise(resolve => { releaseRecord = resolve; });
+    const recordRequested = new Promise(resolve => { observedRecord = resolve; });
+    await page.route('**/api/records/**', async route => {
+      if (new URL(route.request().url()).pathname === `/api/records/${firstId}`) {
+        observedRecord(); await recordBarrier;
+      }
+      await route.continue();
+    });
+    await page.locator(`#tree .tree-item[data-record-id="${firstId}"]`).click();
+    await recordRequested;
+    await page.locator(`#tree .tree-item[data-record-id="${lastId}"]`).click();
+    await page.waitForFunction(id => document.querySelector('#record-meta').textContent.includes(id), lastId);
+    const delayedRecord = page.waitForResponse(r => new URL(r.url()).pathname === `/api/records/${firstId}`);
+    releaseRecord(); await delayedRecord; await page.waitForLoadState('networkidle'); await frame();
+    assert.ok((await page.locator('#record-meta').innerText()).includes(lastId));
+    await page.unroute('**/api/records/**');
+    checks.push('delayed earlier node detail cannot overwrite the last selected node');
+    const otherProject = await page.locator('#project-select option').evaluateAll((options, current) => options.map(o => o.value).find(id => id && id !== current), fixture.project_id);
+    if (otherProject) {
+      await page.goto(`${base}/?project=${encodeURIComponent(otherProject)}&view=3d`, { waitUntil: 'networkidle' });
+      const otherSummary = await page.locator('#graph-summary').innerText();
+      const otherSteps = await page.locator('#timeline .timeline-button').count();
+      let release, observed;
+      const barrier = new Promise(resolve => { release = resolve; });
+      const requested = new Promise(resolve => { observed = resolve; });
+      await page.route('**/api/export?**', async route => {
+        if (new URL(route.request().url()).searchParams.get('project_id') === fixture.project_id) {
+          observed(); await barrier;
+        }
+        await route.continue();
+      });
+      await page.locator('#project-select').selectOption(fixture.project_id);
+      await requested;
+      await page.locator('#project-select').selectOption(otherProject);
+      await page.waitForFunction(id => document.querySelector('#project-select').value === id && document.querySelector('#graph-summary').textContent.includes('표시 노드'), otherProject);
+      const oldResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/export' && new URL(response.url()).searchParams.get('project_id') === fixture.project_id);
+      release(); await oldResponse; await page.waitForLoadState('networkidle'); await frame();
+      assert.equal(await page.locator('#project-select').inputValue(), otherProject);
+      assert.equal(await page.locator('#timeline .timeline-button').count(), otherSteps);
+      assert.equal(await page.locator('#graph-summary').innerText(), otherSummary);
+      assert.ok(!(await page.locator('#timeline').innerText()).includes(fixture.prefix));
+      await page.unroute('**/api/export?**');
+      checks.push('delayed project A response cannot replace project B graph, timeline, or selected context');
+    }
+    await page.goto(`${base}/?project=${encodeURIComponent(fixture.project_id)}&view=3d`, { waitUntil: 'networkidle' });
+    await page.locator('#graph-node-list button').first().waitFor();
+    await page.screenshot({ path: path.join(output, 'dashboard-overview.png') });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await frame();
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), 'dashboard overflows laptop viewport');
+    assert.ok((await canvas.boundingBox()).width > 250);
+    await page.screenshot({ path: path.join(output, 'dashboard-laptop.png') });
+    checks.push('3D dashboard renders at desktop and 1280-pixel laptop widths without horizontal overflow');
+    assert.deepEqual(errors, []);
+    assert.deepEqual(writes, []);
+    checks.push('no JavaScript errors or dashboard mutation requests');
+    fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({ status: 'passed', project_id: fixture.project_id, checks, errors, writes }, null, 2));
+  } catch (error) {
+    await page.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
+    fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({ status: 'failed', error: String(error), checks, errors, writes }, null, 2));
+    throw error;
+  } finally { await browser.close(); }
+})().catch(e => { console.error(e); process.exitCode = 1; });
