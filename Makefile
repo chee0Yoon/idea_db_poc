@@ -1,4 +1,4 @@
-.PHONY: check init-env up down logs acceptance docker-check lifecycle lifecycle-check export
+.PHONY: check init-env up down logs acceptance docker-check lifecycle lifecycle-check evidence-check export
 BASE_URL ?= http://127.0.0.1:8080
 PYTHON ?= python3
 REPORT_DIR ?= test-results/lifecycle-$(shell date +%Y%m%d-%H%M%S)
@@ -31,6 +31,9 @@ lifecycle:
 
 lifecycle-check:
 	IDEA_DB_SUITE=lifecycle bash scripts/docker-check.sh
+
+evidence-check:
+	IDEA_DB_SUITE=evidence bash scripts/docker-check.sh
 
 export:
 	$(PYTHON) scripts/idea-db-client.py --url $(BASE_URL) export

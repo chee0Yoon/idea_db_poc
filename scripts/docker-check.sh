@@ -6,8 +6,8 @@ test_run="idea-db-check-$(date +%s)-$$"
 test_image="${IDEA_DB_TEST_IMAGE:-idea-db:acceptance}"
 test_suite="${IDEA_DB_SUITE:-acceptance}"
 case "$test_suite" in
-  acceptance|lifecycle) ;;
-  *) echo 'IDEA_DB_SUITE must be acceptance or lifecycle' >&2; exit 64 ;;
+  acceptance|lifecycle|evidence) ;;
+  *) echo 'IDEA_DB_SUITE must be acceptance, lifecycle, or evidence' >&2; exit 64 ;;
 esac
 lifecycle_dir="${IDEA_DB_REPORT_DIR:-$PWD/test-results/$test_run}"
 test_dir=$(mktemp -d)
@@ -117,13 +117,24 @@ fi
 start_container "$primary" primary
 primary_url=$(base_for "$primary")
 export IDEA_DB_MCP_COMMAND_JSON="$(mcp_for "$primary")"
-if [[ "$test_suite" == lifecycle ]]; then
+if [[ "$test_suite" == evidence ]]; then
+  python3 tests/acceptance.py --base-url "$primary_url"
+  python3 tests/mcp_ingest.py --base-url "$primary_url" --output-dir "$lifecycle_dir/mcp-ingest"
+  python3 tests/lifecycle.py --base-url "$primary_url" --output-dir "$lifecycle_dir/lifecycle"
+  python3 tests/context_evidence.py --base-url "$primary_url" --output-dir "$lifecycle_dir/context"
+  python3 tests/semantic_probes.py --base-url "$primary_url" --output-dir "$lifecycle_dir/semantic-probes"
+  python3 tests/model_roundtrip.py --base-url "$primary_url" --output-dir "$lifecycle_dir/model-roundtrip"
+  python3 tests/integrity_audit.py --base-url "$primary_url" --output-dir "$lifecycle_dir/audit-before"
+elif [[ "$test_suite" == lifecycle ]]; then
   python3 tests/lifecycle.py --base-url "$primary_url" --output-dir "$lifecycle_dir"
 else
   python3 tests/acceptance.py --base-url "$primary_url"
   python3 tests/mcp_ingest.py --base-url "$primary_url" --output-dir "$lifecycle_dir/mcp-ingest"
 fi
 python3 scripts/idea-db-client.py --url "$primary_url" export --output "$test_dir/before.json"
+if [[ "$test_suite" == evidence ]]; then
+  cp -n "$test_dir/before.json" "$lifecycle_dir/before-export.json"
+fi
 
 # Abrupt process death exercises the database log recovery, not just graceful stop.
 docker kill --signal KILL "$primary" >/dev/null
@@ -140,6 +151,12 @@ print('PASS: abrupt container kill/restart preserves records, heads, receipts, s
 PY
 if [[ "$test_suite" == lifecycle ]]; then
   python3 tests/lifecycle.py --base-url "$primary_url" --verify-report "$lifecycle_dir/report.json"
+elif [[ "$test_suite" == evidence ]]; then
+  cp -n "$test_dir/restarted.json" "$lifecycle_dir/restarted-export.json"
+  python3 tests/lifecycle.py --base-url "$primary_url" --verify-report "$lifecycle_dir/lifecycle/report.json"
+  python3 tests/context_evidence.py --base-url "$primary_url" --verify-manifest "$lifecycle_dir/context/manifest.json"
+  python3 tests/integrity_audit.py --base-url "$primary_url" --output-dir "$lifecycle_dir/audit-restarted"
+  python3 tests/semantic_probes.py --base-url "$primary_url" --output-dir "$lifecycle_dir/audit-restarted" --projection-only
 fi
 
 start_container "$restored" restored
@@ -156,6 +173,12 @@ print('PASS: fresh-volume restore preserves complete graph identity and history'
 PY
 if [[ "$test_suite" == lifecycle ]]; then
   python3 tests/lifecycle.py --base-url "$restored_url" --verify-report "$lifecycle_dir/report.json"
+elif [[ "$test_suite" == evidence ]]; then
+  cp -n "$test_dir/restored.json" "$lifecycle_dir/restored-export.json"
+  python3 tests/lifecycle.py --base-url "$restored_url" --verify-report "$lifecycle_dir/lifecycle/report.json"
+  python3 tests/context_evidence.py --base-url "$restored_url" --verify-manifest "$lifecycle_dir/context/manifest.json"
+  python3 tests/integrity_audit.py --base-url "$restored_url" --output-dir "$lifecycle_dir/audit-restored"
+  python3 tests/semantic_probes.py --base-url "$restored_url" --output-dir "$lifecycle_dir/audit-restored" --projection-only
 fi
 
 # An API process loss must not leave a healthy-looking Neo4j-only appliance.
@@ -179,15 +202,15 @@ docker stop --time 40 "$primary" >/dev/null
   echo 'Graceful stop failed' >&2; exit 1;
 }
 echo 'PASS: graceful container shutdown'
-if [[ "$test_suite" == lifecycle ]]; then
+if [[ "$test_suite" == lifecycle || "$test_suite" == evidence ]]; then
   docker image inspect "$test_image" --format '{{.Id}}' > "$test_dir/image-id"
-  python3 - "$lifecycle_dir" "$test_dir/image-id" <<'PY'
+  python3 - "$lifecycle_dir" "$test_dir/image-id" "$test_suite" <<'PY'
 import datetime, json, pathlib, sys
 out = pathlib.Path(sys.argv[1])
 report = {
     'completed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
     'image_id': pathlib.Path(sys.argv[2]).read_text().strip(),
-    'suite': 'lifecycle_30',
+    'suite': sys.argv[3],
     'abrupt_restart_export_identity': True,
     'abrupt_restart_history_reverified': True,
     'fresh_volume_restore_export_identity': True,
