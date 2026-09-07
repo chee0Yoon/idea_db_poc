@@ -4,6 +4,12 @@ set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 test_run="idea-db-check-$(date +%s)-$$"
 test_image="${IDEA_DB_TEST_IMAGE:-idea-db:acceptance}"
+test_suite="${IDEA_DB_SUITE:-acceptance}"
+case "$test_suite" in
+  acceptance|lifecycle) ;;
+  *) echo 'IDEA_DB_SUITE must be acceptance or lifecycle' >&2; exit 64 ;;
+esac
+lifecycle_dir="${IDEA_DB_REPORT_DIR:-$PWD/test-results/$test_run}"
 test_dir=$(mktemp -d)
 primary="${test_run}-primary"
 restored="${test_run}-restored"
@@ -56,7 +62,11 @@ if [[ ${IDEA_DB_SKIP_BUILD:-0} != 1 ]]; then
 fi
 start_container "$primary" primary
 primary_url=$(base_for "$primary")
-python3 tests/acceptance.py --base-url "$primary_url"
+if [[ "$test_suite" == lifecycle ]]; then
+  python3 tests/lifecycle.py --base-url "$primary_url" --output-dir "$lifecycle_dir"
+else
+  python3 tests/acceptance.py --base-url "$primary_url"
+fi
 python3 scripts/idea-db-client.py --url "$primary_url" export --output "$test_dir/before.json"
 
 # Abrupt process death exercises the database log recovery, not just graceful stop.
@@ -72,6 +82,9 @@ assert a['content'] == b['content'], 'Restart changed authoritative export conte
 assert a['digest'] == b['digest'], 'Restart changed export digest'
 print('PASS: abrupt container kill/restart preserves records, heads, receipts, sequence and digest')
 PY
+if [[ "$test_suite" == lifecycle ]]; then
+  python3 tests/lifecycle.py --base-url "$primary_url" --verify-report "$lifecycle_dir/report.json"
+fi
 
 start_container "$restored" restored
 restored_url=$(base_for "$restored")
@@ -84,6 +97,9 @@ assert a['content'] == b['content'], 'Restore changed authoritative export conte
 assert a['digest'] == b['digest'], 'Restore changed export digest'
 print('PASS: fresh-volume restore preserves complete graph identity and history')
 PY
+if [[ "$test_suite" == lifecycle ]]; then
+  python3 tests/lifecycle.py --base-url "$restored_url" --verify-report "$lifecycle_dir/report.json"
+fi
 
 # An API process loss must not leave a healthy-looking Neo4j-only appliance.
 docker exec "$restored" bash -c 'kill -TERM "$(pgrep -x idea-db)"'
@@ -106,4 +122,26 @@ docker stop --time 40 "$primary" >/dev/null
   echo 'Graceful stop failed' >&2; exit 1;
 }
 echo 'PASS: graceful container shutdown'
+if [[ "$test_suite" == lifecycle ]]; then
+  docker image inspect "$test_image" --format '{{.Id}}' > "$test_dir/image-id"
+  python3 - "$lifecycle_dir" "$test_dir/image-id" <<'PY'
+import datetime, json, pathlib, sys
+out = pathlib.Path(sys.argv[1])
+report = {
+    'completed_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    'image_id': pathlib.Path(sys.argv[2]).read_text().strip(),
+    'suite': 'lifecycle_30',
+    'abrupt_restart_export_identity': True,
+    'abrupt_restart_history_reverified': True,
+    'fresh_volume_restore_export_identity': True,
+    'fresh_volume_restore_history_reverified': True,
+    'required_child_exit_fails_container': True,
+    'graceful_shutdown_exit_zero': True,
+}
+with (out / 'deployment-checks.json').open('x', encoding='utf-8') as file:
+    json.dump(report, file, ensure_ascii=False, indent=2)
+    file.write('\n')
+print('Lifecycle reports retained at: ' + str(out))
+PY
+fi
 echo 'Docker acceptance passed; temporary test containers and volumes will be removed.'

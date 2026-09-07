@@ -1,6 +1,7 @@
-.PHONY: check init-env up down logs acceptance docker-check export
+.PHONY: check init-env up down logs acceptance docker-check lifecycle lifecycle-check export
 BASE_URL ?= http://127.0.0.1:8080
 PYTHON ?= python3
+REPORT_DIR ?= test-results/lifecycle-$(shell date +%Y%m%d-%H%M%S)
 
 check:
 	cargo fmt --check
@@ -24,6 +25,12 @@ acceptance:
 
 docker-check:
 	bash scripts/docker-check.sh
+
+lifecycle:
+	$(PYTHON) tests/lifecycle.py --base-url $(BASE_URL) --output-dir "$(REPORT_DIR)"
+
+lifecycle-check:
+	IDEA_DB_SUITE=lifecycle bash scripts/docker-check.sh
 
 export:
 	$(PYTHON) scripts/idea-db-client.py --url $(BASE_URL) export

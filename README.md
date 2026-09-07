@@ -47,9 +47,12 @@ Rust 1.98, 실제 Neo4j 5.26.30 Community로 개발합니다. Neo4j 저장소에
 make check
 make acceptance BASE_URL=http://127.0.0.1:8080
 make docker-check
+make lifecycle-check     # 30단계 기획 전환·역할별 실행·시간 조회·복구
 ```
 
 acceptance는 실행 중인 DB에 고유 ID를 가진 테스트 Project를 추가합니다. 사용자 데이터 초기화/삭제는 하지 않습니다. 독립적인 검증 DB에는 `make docker-check`를 사용하세요. Python 3의 표준 라이브러리는 **검증/클라이언트 도구**에만 사용하며 이미지 DB 런타임에는 필요하지 않습니다.
+
+30단계 검증의 입력 기획서는 [examples/lifecycle_30](examples/lifecycle_30/), 실행 범위와 단계 구성은 [docs/lifecycle.md](docs/lifecycle.md)에 있습니다. `make lifecycle-check`는 별도 임시 DB를 만들고 검증 후 정리하며, 결과와 실행 산출물은 `test-results/`에 보존합니다.
 
 API만 별도로 배포하려면 `docker build --target api -t idea-db-api:local .`로 빌드하고 idea_db 전용 Neo4j 데이터베이스의 `NEO4J_URI`와 인증을 설정합니다. 기본 standalone 이미지와 API-only 이미지는 동일한 Rust 코드를 사용합니다.
 

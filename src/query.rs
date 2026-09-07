@@ -462,6 +462,23 @@ fn all_occurrences(v: &View, s: Stage, wanted: &str, project: Option<&str>) -> V
     }
     out
 }
+
+/// A judgment cannot be projected before the observation window it evaluates.
+/// Knowledge time has already filtered records in `view`; effective time must
+/// also filter conclusions, otherwise a hidden observation leaks via its gate.
+fn assessment_visible(v: &View, assessment: &AssessmentData) -> bool {
+    v.effective.as_ref().is_none_or(|cut| {
+        time(&assessment.evidence_cutoff_at, "evidence_cutoff_at").is_ok_and(|at| at <= *cut)
+            && v.ctx
+                .records
+                .get(&assessment.baseline_id)
+                .and_then(StoredRecord::as_baseline)
+                .is_some_and(|baseline| {
+                    time(&baseline.effective_from, "effective_from").is_ok_and(|at| at <= *cut)
+                })
+    })
+}
+
 pub fn record(ctx: &Context, id: &str, p: &Params) -> ApiResult<Value> {
     check(
         p,
@@ -537,7 +554,7 @@ pub fn record(ctx: &Context, id: &str, p: &Params) -> ApiResult<Value> {
             .values()
             .filter(|x| {
                 x.as_assessment()
-                    .is_some_and(|d| d.target_revision_id == id)
+                    .is_some_and(|d| d.target_revision_id == id && assessment_visible(&v, d))
             })
             .map(record_json)
             .collect::<Vec<_>>();
@@ -1140,6 +1157,9 @@ pub fn goals(ctx: &Context, p: &Params) -> ApiResult<Value> {
             let mut proposed_assessments = Vec::new();
             for assessment_record in assessments {
                 let assessment = assessment_record.as_assessment().unwrap();
+                if !assessment_visible(&v, assessment) {
+                    continue;
+                }
                 let valid = assessment.root_revision_id == root
                     && assessment.slot_path == g.scope.slot_path
                     && assessment.target_revision_id == g.scope.target_revision_id
@@ -1594,5 +1614,79 @@ mod tests {
         let found = goals(&context, &february).unwrap();
         assert_eq!(found["goals"][0]["gate_status"], "met");
         assert_eq!(found["goals"][0]["baselines"].as_array().unwrap().len(), 2);
+    }
+    #[test]
+    fn assessments_cannot_leak_future_evidence_into_an_earlier_effective_view() {
+        let mut ctx = related_context();
+        for (id, seq, kind, data) in [
+            (
+                "goal_time",
+                11,
+                RecordKind::Goal,
+                json!({
+                    "project_id":"proj_q", "scope":{"root_revision_id":"rev_root","slot_path":["schema","be"],"target_revision_id":"rev_be"},
+                    "statement":"Time bounded result", "criteria":[{"criterion_id":"ok","kind":"qualitative","statement":"Measured success","required":true}],
+                    "origin":"official", "actor":"human:test"
+                }),
+            ),
+            (
+                "baseline_time",
+                12,
+                RecordKind::Baseline,
+                json!({
+                    "goal_id":"goal_time","criterion_ids":["ok"],"effective_from":"2026-08-01T00:00:00Z", "actor":"human:test","reason":"adopt"
+                }),
+            ),
+            (
+                "obs_time",
+                13,
+                RecordKind::Observation,
+                json!({
+                    "project_id":"proj_q","target_revision_id":"rev_be","metric":"passes","value":true,
+                    "status":"observed","occurred_at":"2026-08-03T09:00:00+09:00","method":"executed test", "actor":"human:test"
+                }),
+            ),
+            (
+                "assessment_time",
+                14,
+                RecordKind::Assessment,
+                json!({
+                    "root_revision_id":"rev_root","slot_path":["schema","be"],"target_revision_id":"rev_be","baseline_id":"baseline_time",
+                    "evidence_cutoff_seq":13,"evidence_cutoff_at":"2026-08-03T09:00:00+09:00","evaluator":"human:test","rubric_version":"v1",
+                    "origin":"official","status":"met","criteria_results":[{"criterion_id":"ok","status":"met"}],"evidence_observation_ids":["obs_time"]
+                }),
+            ),
+        ] {
+            ctx.records
+                .insert(id.into(), fixtures::record(id, seq, kind, data));
+        }
+        ctx.seq = 14;
+        let before = Params::from([(
+            "effective_at".into(),
+            "2026-08-03T08:59:59.999+09:00".into(),
+        )]);
+        let detail = record(&ctx, "rev_be", &before).unwrap();
+        assert!(detail["evidence"]["observations"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(
+            detail["evidence"]["assessments"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "an assessment exposes future observations indirectly"
+        );
+        let mut scope = before;
+        scope.insert("project_id".into(), "proj_q".into());
+        assert_eq!(
+            goals(&ctx, &scope).unwrap()["goals"][0]["gate_status"],
+            "unknown"
+        );
+        scope.insert("effective_at".into(), "2026-08-03T00:00:00Z".into());
+        assert_eq!(
+            goals(&ctx, &scope).unwrap()["goals"][0]["gate_status"],
+            "met"
+        );
     }
 }

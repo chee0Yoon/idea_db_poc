@@ -18,3 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make docker-check
+      - run: make lifecycle-check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lifecycle-validation
+          path: test-results/
+          if-no-files-found: ignore

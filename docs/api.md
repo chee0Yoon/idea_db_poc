@@ -442,7 +442,7 @@ Neo4j 미연결이면 `503 {"code":"not_ready","message":"…","details":{"last_
 ### 5.4 `GET /api/records/{id}`
 쿼리: `include`(쉼표 구분: `links`,`lineage`,`evidence`,`occurrences`; 기본 전부), `stage`(occurrences 계산용, 기본 `working`), **`known_seq` 또는 `known_at`**(선택), **`effective_at`**(선택).
 
-**시점 필터는 상세 조회에도 적용된다 (r2).** `known_seq`/`known_at`을 주면 `seq > known_seq`인 레코드는 `revisions_of_entity`, `lineage`, `links`, `evidence`, `occurrences` 어디에도 나오지 않는다. `effective_at`을 주면 `occurred_at`이 그보다 미래인 관측/캡처가 `evidence`에서 빠진다. 요청한 레코드 자신이 `known_seq`보다 미래면 `404 not_found`다. 과거 시점 화면은 스냅샷·검색과 **같은 필터를 상세 조회에도 그대로 실어야** 한다. 필터를 생략하면 현재 시점(모든 레코드)이다.
+**시점 필터는 상세 조회에도 적용된다 (r2).** `known_seq`/`known_at`을 주면 `seq > known_seq`인 레코드는 `revisions_of_entity`, `lineage`, `links`, `evidence`, `occurrences` 어디에도 나오지 않는다. `effective_at`을 주면 `occurred_at`이 그보다 미래인 관측/캡처가 `evidence`에서 빠진다. 평가도 `evidence_cutoff_at`과 연결된 기준선의 `effective_from`이 모두 조회 시점 이하여야 표시한다. 따라서 미래 근거로 만든 평가가 과거 관측 조회나 목표 상태에 간접적으로 새지 않는다. 요청한 레코드 자신이 `known_seq`보다 미래면 `404 not_found`다. 과거 시점 화면은 스냅샷·검색과 **같은 필터를 상세 조회에도 그대로 실어야** 한다. 필터를 생략하면 현재 시점(모든 레코드)이다.
 
 ```json
 {
@@ -595,7 +595,7 @@ Neo4j 미연결이면 `503 {"code":"not_ready","message":"…","details":{"last_
 - `known_at`을 주면 `recorded_at <= known_at`인 최대 `seq`를 `known_seq`로 삼는다. 둘 다 없으면 현재 `seq`.
 - `stage=working`: `seq <= known_seq`인 `head_change`(stage=working) 중 `seq` 최대값의 `after_revision_id`.
 - `stage=official`: `seq <= known_seq`이고 `published_at <= effective_at`(생략 시 무한)인 `publication` 중 **`(published_at, seq, id)` 사전식 최대**. 결정적 우선순위다.
-- 미래 레코드(`seq > known_seq`)와 미래 근거(`occurred_at > effective_at`)는 어디에도 새지 않는다.
+- 미래 레코드(`seq > known_seq`)와 미래 근거(`occurred_at > effective_at`)는 어디에도 새지 않는다. 평가의 근거 종료 시각(`evidence_cutoff_at`)이나 기준선 시작 시각이 미래라면 그 평가는 목표 상태와 `stale_assessments`에서도 제외한다.
 
 응답:
 ```json
